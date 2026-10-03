@@ -2,3 +2,9 @@
 .html
 .env
 darts-scorer.html
+darts-scorer-app.html
+node_modules/
+dist/
+coverage/
+backend/data/
+*.db*
