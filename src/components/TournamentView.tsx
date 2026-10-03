@@ -1,15 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { TournamentState, PoolGroup, KnockoutMatch } from '../core/types';
+import { TournamentState, PoolGroup, KnockoutMatch, TournamentFormat } from '../core/types';
 import {
   createTournament,
+  createChallongeTournament,
   recordPoolMatchResult,
   generateKnockoutFromPools,
   recordKnockoutMatchResult,
   calculateStandings,
 } from '../core/tournament';
 import { saveTournament, loadTournament, clearTournament } from '../services/storage';
-import { exportStandingsToCsv, downloadFile } from '../services/export';
+import { exportStandingsToCsv, exportTournamentBracketToPdf, downloadFile } from '../services/export';
 import { apiSaveTournament } from '../services/api';
+import { BracketPreview } from './BracketPreview';
+import { ChallongeBracketView } from './ChallongeBracketView';
 
 interface TournamentViewProps {
   onLoadMatchForScoring?: (
@@ -25,6 +28,7 @@ export const TournamentView: React.FC<TournamentViewProps> = ({ onLoadMatchForSc
 
   // Setup form states
   const [tourneyName, setTourneyName] = useState('Intramurals Darts Championship');
+  const [format, setFormat] = useState<TournamentFormat>('pools_knockout');
   const [playerInput, setPlayerInput] = useState(
     'Alex Carter\nJordan Smith\nSam Taylor\nChris Evans\nPat Morgan\nTaylor Green\nCasey Brooks\nRiley Vance',
   );
@@ -54,16 +58,27 @@ export const TournamentView: React.FC<TournamentViewProps> = ({ onLoadMatchForSc
       return;
     }
 
-    const newTourney = createTournament({
-      name: tourneyName,
-      players,
-      poolLegsToWin: poolLegs,
-      koSemiLegsToWin: semiLegs,
-      koFinalLegsToWin: finalLegs,
-    });
+    let newTourney: TournamentState;
+    if (format === 'challonge_single_elim') {
+      newTourney = createChallongeTournament({
+        name: tourneyName,
+        players,
+        legsToWin: poolLegs,
+        semiLegsToWin: semiLegs,
+        finalLegsToWin: finalLegs,
+      });
+    } else {
+      newTourney = createTournament({
+        name: tourneyName,
+        players,
+        poolLegsToWin: poolLegs,
+        koSemiLegsToWin: semiLegs,
+        koFinalLegsToWin: finalLegs,
+      });
+    }
 
     setTournament(newTourney);
-    setActiveTab('pools');
+    setActiveTab(format === 'challonge_single_elim' ? 'bracket' : 'pools');
   };
 
   const handleResetTournament = () => {
@@ -141,11 +156,16 @@ export const TournamentView: React.FC<TournamentViewProps> = ({ onLoadMatchForSc
   };
 
   if (!tournament) {
+    const parsedPlayers = playerInput
+      .split('\n')
+      .map((p) => p.trim())
+      .filter(Boolean);
+
     return (
-      <div className="card-panel" style={{ maxWidth: '640px', margin: '2vh auto' }}>
+      <div className="card-panel" style={{ maxWidth: '780px', margin: '2vh auto' }}>
         <h2>Create Tournament</h2>
         <p style={{ color: 'var(--muted)' }}>
-          Set up round-robin pools of 4 players, top 2 advance to single-elimination knockout.
+          Configure your tournament format, players, and match lengths with live bracket preview.
         </p>
 
         <form onSubmit={handleCreateTournament}>
@@ -161,10 +181,60 @@ export const TournamentView: React.FC<TournamentViewProps> = ({ onLoadMatchForSc
           </div>
 
           <div className="f-group">
+            <label>Tournament Bracket Format</label>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+                gap: '12px',
+                marginTop: '6px',
+              }}
+            >
+              <button
+                type="button"
+                className={`btn ${format === 'pools_knockout' ? 'pri' : 'sec'}`}
+                style={{
+                  padding: '12px 14px',
+                  textAlign: 'left',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '4px',
+                  border: format === 'pools_knockout' ? '2px solid var(--accent)' : '1px solid var(--line)',
+                }}
+                onClick={() => setFormat('pools_knockout')}
+              >
+                <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>🏁 Round-Robin Pools + Knockout</span>
+                <span style={{ fontSize: '0.8rem', opacity: 0.85, lineHeight: 1.3 }}>
+                  Groups of 4 round-robin, top 2 advance to single elimination.
+                </span>
+              </button>
+
+              <button
+                type="button"
+                className={`btn ${format === 'challonge_single_elim' ? 'pri' : 'sec'}`}
+                style={{
+                  padding: '12px 14px',
+                  textAlign: 'left',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '4px',
+                  border: format === 'challonge_single_elim' ? '2px solid var(--accent)' : '1px solid var(--line)',
+                }}
+                onClick={() => setFormat('challonge_single_elim')}
+              >
+                <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>⚡ Challonge Elimination Bracket</span>
+                <span style={{ fontSize: '0.8rem', opacity: 0.85, lineHeight: 1.3 }}>
+                  Pure tournament tree with seeded bracket pairings & byes.
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <div className="f-group">
             <label htmlFor="players">Players (one per line, min 4 players)</label>
             <textarea
               id="players"
-              rows={8}
+              rows={7}
               value={playerInput}
               onChange={(e) => setPlayerInput(e.target.value)}
               style={{
@@ -181,9 +251,18 @@ export const TournamentView: React.FC<TournamentViewProps> = ({ onLoadMatchForSc
             />
           </div>
 
+          <div style={{ margin: '14px 0 20px' }}>
+            <label style={{ display: 'block', marginBottom: '8px', fontSize: '0.85rem', color: 'var(--muted)', fontWeight: 600 }}>
+              Live Format Preview ({parsedPlayers.length} Players Entered)
+            </label>
+            <BracketPreview format={format} players={parsedPlayers} />
+          </div>
+
           <div className="row-grid">
             <div className="f-group">
-              <label htmlFor="poolLegs">Pool Match (First to)</label>
+              <label htmlFor="poolLegs">
+                {format === 'challonge_single_elim' ? 'Early Rounds (First to)' : 'Pool Match (First to)'}
+              </label>
               <select
                 id="poolLegs"
                 value={poolLegs}
@@ -222,7 +301,9 @@ export const TournamentView: React.FC<TournamentViewProps> = ({ onLoadMatchForSc
           </div>
 
           <button type="submit" className="btn pri" style={{ width: '100%', marginTop: '10px' }}>
-            Generate Tournament & Pools
+            {format === 'challonge_single_elim'
+              ? 'Generate Challonge Elimination Bracket'
+              : 'Generate Tournament & Pools'}
           </button>
         </form>
       </div>
@@ -242,56 +323,91 @@ export const TournamentView: React.FC<TournamentViewProps> = ({ onLoadMatchForSc
         }}
       >
         <div>
-          <h2 style={{ margin: 0 }}>{tournament.name}</h2>
-          <div style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>
-            Pools: First to {tournament.poolLegsToWin} | Semis: First to {tournament.koSemiLegsToWin} |
-            Final: First to {tournament.koFinalLegsToWin}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            <h2 style={{ margin: 0 }}>{tournament.name}</h2>
+            <span
+              style={{
+                fontSize: '0.75rem',
+                background: tournament.format === 'challonge_single_elim' ? '#1e3a8a' : '#14532d',
+                color: '#bfdbfe',
+                padding: '2px 8px',
+                borderRadius: '12px',
+                fontWeight: 600,
+              }}
+            >
+              {tournament.format === 'challonge_single_elim' ? '⚡ Challonge Elimination' : '🏁 Pools & Knockout'}
+            </span>
+          </div>
+          <div style={{ color: 'var(--muted)', fontSize: '0.9rem', marginTop: '2px' }}>
+            {tournament.format === 'challonge_single_elim'
+              ? `Rounds: First to ${tournament.poolLegsToWin} | Semis: First to ${tournament.koSemiLegsToWin} | Final: First to ${tournament.koFinalLegsToWin}`
+              : `Pools: First to ${tournament.poolLegsToWin} | Semis: First to ${tournament.koSemiLegsToWin} | Final: First to ${tournament.koFinalLegsToWin}`}
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: '8px' }}>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
           <button
-            className={`btn ${activeTab === 'pools' ? 'pri' : 'sec'}`}
-            onClick={() => setActiveTab('pools')}
+            className="btn"
+            style={{ background: '#1e293b', border: '1px solid #475569', color: '#f8fafc' }}
+            onClick={() => exportTournamentBracketToPdf(tournament)}
+            title="Print or export tournament bracket as PDF"
           >
-            Pools & Fixtures
+            📄 Export Tournament PDF
           </button>
-          <button
-            className={`btn ${activeTab === 'bracket' ? 'pri' : 'sec'}`}
-            onClick={() => setActiveTab('bracket')}
-          >
-            Knockout Bracket
-          </button>
+          {tournament.format !== 'challonge_single_elim' && (
+            <>
+              <button
+                className={`btn ${activeTab === 'pools' ? 'pri' : 'sec'}`}
+                onClick={() => setActiveTab('pools')}
+              >
+                Pools & Fixtures
+              </button>
+              <button
+                className={`btn ${activeTab === 'bracket' ? 'pri' : 'sec'}`}
+                onClick={() => setActiveTab('bracket')}
+              >
+                Knockout Bracket
+              </button>
+            </>
+          )}
           <button className="btn danger" onClick={handleResetTournament}>
             Reset
           </button>
         </div>
       </div>
 
-      {tournament.champion && (
-        <div
-          className="card-panel"
-          style={{
-            borderColor: 'var(--brass)',
-            textAlign: 'center',
-            marginBottom: '20px',
-            background: 'linear-gradient(180deg, #153d35 0%, #102d26 100%)',
-          }}
-        >
-          <h1 style={{ color: 'var(--brass)', margin: '0 0 6px', fontSize: '3rem' }}>
-            🏆 TOURNAMENT CHAMPION 🏆
-          </h1>
-          <h2 style={{ fontSize: '2.5rem', margin: 0 }}>{tournament.champion}</h2>
-        </div>
-      )}
+      {tournament.format === 'challonge_single_elim' ? (
+        <ChallongeBracketView
+          tournament={tournament}
+          onUpdateTournament={setTournament}
+          onLoadMatchForScoring={onLoadMatchForScoring}
+        />
+      ) : (
+        <>
+          {tournament.champion && (
+            <div
+              className="card-panel"
+              style={{
+                borderColor: 'var(--brass)',
+                textAlign: 'center',
+                marginBottom: '20px',
+                background: 'linear-gradient(180deg, #153d35 0%, #102d26 100%)',
+              }}
+            >
+              <h1 style={{ color: 'var(--brass)', margin: '0 0 6px', fontSize: '3rem' }}>
+                🏆 TOURNAMENT CHAMPION 🏆
+              </h1>
+              <h2 style={{ fontSize: '2.5rem', margin: 0 }}>{tournament.champion}</h2>
+            </div>
+          )}
 
-      {activeTab === 'pools' && (
-        <div style={{ display: 'grid', gap: '24px' }}>
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <button className="btn pri" onClick={handleGenerateBracket}>
-              Generate / Update Knockout Bracket &rarr;
-            </button>
-          </div>
+          {activeTab === 'pools' && (
+            <div style={{ display: 'grid', gap: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <button className="btn pri" onClick={handleGenerateBracket}>
+                  Generate / Update Knockout Bracket &rarr;
+                </button>
+              </div>
 
           {tournament.pools.map((pool) => {
             const standings = calculateStandings(pool);
@@ -490,6 +606,8 @@ export const TournamentView: React.FC<TournamentViewProps> = ({ onLoadMatchForSc
             </div>
           )}
         </div>
+      )}
+        </>
       )}
     </div>
   );

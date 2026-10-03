@@ -6,6 +6,7 @@ import { TournamentView } from './components/TournamentView';
 import { RulesGuide } from './components/RulesGuide';
 import { ExportView } from './components/ExportView';
 import { ProjectorView } from './components/ProjectorView';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 type Tab = 'match' | 'tournament' | 'rules' | 'export';
 
@@ -54,63 +55,65 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className="wrap">
-      <header className="top-nav">
-        <div>
-          <h1 style={{ margin: 0, fontSize: 'clamp(1.8rem, 4vw, 2.6rem)' }}>
-            Intramurals Darts Championship
-          </h1>
-          <div style={{ color: 'var(--muted)', fontSize: '0.95rem' }}>
-            Offline Scoring & Tournament Manager for the Oche
+    <ErrorBoundary>
+      <div className="wrap">
+        <header className="top-nav">
+          <div>
+            <h1 style={{ margin: 0, fontSize: 'clamp(1.8rem, 4vw, 2.6rem)' }}>
+              Intramurals Darts Championship
+            </h1>
+            <div style={{ color: 'var(--muted)', fontSize: '0.95rem' }}>
+              Offline Scoring & Tournament Manager for the Oche
+            </div>
           </div>
-        </div>
 
-        <nav className="nav-tabs">
-          <button
-            className={`tab-btn ${activeTab === 'match' ? 'active' : ''}`}
-            onClick={() => setActiveTab('match')}
-          >
-            Match Scorer
-          </button>
-          <button
-            className={`tab-btn ${activeTab === 'tournament' ? 'active' : ''}`}
-            onClick={() => setActiveTab('tournament')}
-          >
-            Tournament & Pools
-          </button>
-          <button
-            className={`tab-btn ${activeTab === 'rules' ? 'active' : ''}`}
-            onClick={() => setActiveTab('rules')}
-          >
-            Official Rules
-          </button>
-          <button
-            className={`tab-btn ${activeTab === 'export' ? 'active' : ''}`}
-            onClick={() => setActiveTab('export')}
-          >
-            Data & Export
-          </button>
-        </nav>
-      </header>
+          <nav className="nav-tabs">
+            <button
+              className={`tab-btn ${activeTab === 'match' ? 'active' : ''}`}
+              onClick={() => setActiveTab('match')}
+            >
+              Match Scorer
+            </button>
+            <button
+              className={`tab-btn ${activeTab === 'tournament' ? 'active' : ''}`}
+              onClick={() => setActiveTab('tournament')}
+            >
+              Tournament & Pools
+            </button>
+            <button
+              className={`tab-btn ${activeTab === 'rules' ? 'active' : ''}`}
+              onClick={() => setActiveTab('rules')}
+            >
+              Official Rules
+            </button>
+            <button
+              className={`tab-btn ${activeTab === 'export' ? 'active' : ''}`}
+              onClick={() => setActiveTab('export')}
+            >
+              Data & Export
+            </button>
+          </nav>
+        </header>
 
-      <main>
-        {activeTab === 'match' && (
-          <MatchView
-            presetMatch={presetMatch}
-            onOpenProjector={(state) => setProjectorState(state)}
-            onMatchComplete={handleMatchComplete}
-          />
-        )}
+        <main>
+          {activeTab === 'match' && (
+            <MatchView
+              presetMatch={presetMatch}
+              onOpenProjector={(state) => setProjectorState(state)}
+              onMatchComplete={handleMatchComplete}
+            />
+          )}
 
-        {activeTab === 'tournament' && (
-          <TournamentView onLoadMatchForScoring={handleLoadTournamentMatch} />
-        )}
+          {activeTab === 'tournament' && (
+            <TournamentView onLoadMatchForScoring={handleLoadTournamentMatch} />
+          )}
 
-        {activeTab === 'rules' && <RulesGuide />}
+          {activeTab === 'rules' && <RulesGuide />}
 
-        {activeTab === 'export' && <ExportView />}
-      </main>
-    </div>
+          {activeTab === 'export' && <ExportView />}
+        </main>
+      </div>
+    </ErrorBoundary>
   );
 };
 

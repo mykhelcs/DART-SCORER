@@ -1,4 +1,4 @@
-import { MatchState, TournamentState } from '../core/types';
+import { MatchState, TournamentState, AuditLog } from '../core/types';
 
 const API_BASE = 'http://localhost:3001/api';
 
@@ -75,3 +75,41 @@ export async function apiLoadMatch(id: string): Promise<MatchState | null> {
     return null;
   }
 }
+
+export async function apiSaveAuditLog(
+  log: Omit<AuditLog, 'id' | 'timestamp'> & { id?: string; timestamp?: string },
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/audit-logs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(log),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function apiGetAuditLogs(options?: {
+  limit?: number;
+  entityType?: string;
+  entityId?: string;
+}): Promise<AuditLog[]> {
+  try {
+    const params = new URLSearchParams();
+    if (options?.limit) params.set('limit', String(options.limit));
+    if (options?.entityType) params.set('entityType', options.entityType);
+    if (options?.entityId) params.set('entityId', options.entityId);
+
+    const queryString = params.toString();
+    const url = `${API_BASE}/audit-logs${queryString ? `?${queryString}` : ''}`;
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.auditLogs || [];
+  } catch {
+    return [];
+  }
+}
+

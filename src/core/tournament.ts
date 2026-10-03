@@ -5,6 +5,7 @@ import {
   PoolGroup,
   PoolPlayerRecord,
   TournamentState,
+  ChallongeMatch,
 } from './types';
 
 export function calculateStandings(pool: PoolGroup): PoolPlayerRecord[] {
@@ -97,6 +98,8 @@ export function createTournament(options: {
     koFinalLegsToWin,
     pools,
     knockoutMatches: [],
+    challongeMatches: [],
+    format: 'pools_knockout',
     champion: null,
   };
 }
@@ -333,3 +336,202 @@ export function recordKnockoutMatchResult(
 
   return updated;
 }
+
+function generateSeededPairs(size: number): [number, number][] {
+  if (size <= 4) {
+    return [
+      [1, 4],
+      [2, 3],
+    ];
+  }
+  if (size <= 8) {
+    return [
+      [1, 8],
+      [4, 5],
+      [2, 7],
+      [3, 6],
+    ];
+  }
+  if (size <= 16) {
+    return [
+      [1, 16],
+      [8, 9],
+      [4, 13],
+      [5, 12],
+      [2, 15],
+      [7, 10],
+      [3, 14],
+      [6, 11],
+    ];
+  }
+  const pairs: [number, number][] = [];
+  for (let i = 1; i <= size / 2; i++) {
+    pairs.push([i, size + 1 - i]);
+  }
+  return pairs;
+}
+
+export function createChallongeTournament(options: {
+  name: string;
+  players: string[];
+  gameMode?: GameMode;
+  doubleOut?: boolean;
+  legsToWin?: number;
+  semiLegsToWin?: number;
+  finalLegsToWin?: number;
+}): TournamentState {
+  const cleanPlayers = options.players.map((p) => p.trim()).filter(Boolean);
+  const legsToWin = options.legsToWin ?? 3;
+
+  // Bracket size: smallest power of 2 >= cleanPlayers.length, min 4
+  let bracketSize = 4;
+  while (bracketSize < cleanPlayers.length) {
+    bracketSize *= 2;
+  }
+
+  const totalRounds = Math.log2(bracketSize);
+  const seededPairs = generateSeededPairs(bracketSize);
+  const allMatches: ChallongeMatch[] = [];
+
+  function getRoundName(roundIdx: number): string {
+    const dist = totalRounds - 1 - roundIdx;
+    if (dist === 0) return 'Championship Final';
+    if (dist === 1) return 'Semi-Final';
+    if (dist === 2) return 'Quarter-Final';
+    if (dist === 3) return 'Round of 16';
+    return `Round ${roundIdx + 1}`;
+  }
+
+  // Create matches round by round
+  for (let r = 0; r < totalRounds; r++) {
+    const numMatchesInRound = bracketSize / Math.pow(2, r + 1);
+    const roundName = getRoundName(r);
+
+    let matchLegs = legsToWin;
+    const dist = totalRounds - 1 - r;
+    if (dist === 0 && options.finalLegsToWin) matchLegs = options.finalLegsToWin;
+    else if (dist === 1 && options.semiLegsToWin) matchLegs = options.semiLegsToWin;
+
+    for (let m = 1; m <= numMatchesInRound; m++) {
+      const matchId = `challonge-r${r}-m${m}`;
+      let nextMatchId: string | undefined;
+      let nextMatchSlot: (1 | 2) | undefined;
+
+      if (r < totalRounds - 1) {
+        nextMatchId = `challonge-r${r + 1}-m${Math.ceil(m / 2)}`;
+        nextMatchSlot = m % 2 === 1 ? 1 : 2;
+      }
+
+      allMatches.push({
+        id: matchId,
+        roundIndex: r,
+        roundName,
+        matchNumber: m,
+        player1: null,
+        player2: null,
+        legsToWin: matchLegs,
+        player1Legs: 0,
+        player2Legs: 0,
+        winner: null,
+        completed: false,
+        nextMatchId,
+        nextMatchSlot,
+      });
+    }
+  }
+
+  // Populate Round 0 with seeded players & process Byes
+  const r0Matches = allMatches.filter((m) => m.roundIndex === 0);
+  for (let i = 0; i < seededPairs.length; i++) {
+    const match = r0Matches[i];
+    const [s1, s2] = seededPairs[i];
+
+    const p1 = s1 <= cleanPlayers.length ? cleanPlayers[s1 - 1] : null;
+    const p2 = s2 <= cleanPlayers.length ? cleanPlayers[s2 - 1] : null;
+
+    match.player1 = p1;
+    match.player1Seed = p1 ? s1 : undefined;
+    match.player2 = p2;
+    match.player2Seed = p2 ? s2 : undefined;
+
+    // Check for Bye
+    if (p1 && !p2) {
+      match.isBye = true;
+      match.completed = true;
+      match.winner = p1;
+      if (match.nextMatchId) {
+        const nextMatch = allMatches.find((nm) => nm.id === match.nextMatchId);
+        if (nextMatch) {
+          if (match.nextMatchSlot === 1) nextMatch.player1 = p1;
+          else if (match.nextMatchSlot === 2) nextMatch.player2 = p1;
+        }
+      }
+    } else if (p2 && !p1) {
+      match.isBye = true;
+      match.completed = true;
+      match.winner = p2;
+      if (match.nextMatchId) {
+        const nextMatch = allMatches.find((nm) => nm.id === match.nextMatchId);
+        if (nextMatch) {
+          if (match.nextMatchSlot === 1) nextMatch.player1 = p2;
+          else if (match.nextMatchSlot === 2) nextMatch.player2 = p2;
+        }
+      }
+    }
+  }
+
+  const randomSuffix = Math.random().toString(36).substring(2, 8);
+  return {
+    id: `tourney-ch-${Date.now()}-${randomSuffix}`,
+    name: options.name,
+    format: 'challonge_single_elim',
+    gameMode: options.gameMode ?? 501,
+    doubleOut: options.doubleOut ?? true,
+    poolLegsToWin: legsToWin,
+    koQuarterLegsToWin: legsToWin,
+    koSemiLegsToWin: options.semiLegsToWin ?? legsToWin,
+    koFinalLegsToWin: options.finalLegsToWin ?? legsToWin,
+    pools: [],
+    knockoutMatches: [],
+    challongeMatches: allMatches,
+    champion: null,
+  };
+}
+
+export function recordChallongeMatchResult(
+  tournament: TournamentState,
+  matchId: string,
+  player1Legs: number,
+  player2Legs: number,
+): TournamentState {
+  const updated = JSON.parse(JSON.stringify(tournament)) as TournamentState;
+  if (!updated.challongeMatches) return tournament;
+
+  const match = updated.challongeMatches.find((m) => m.id === matchId);
+  if (!match) return tournament;
+
+  match.player1Legs = player1Legs;
+  match.player2Legs = player2Legs;
+  match.completed = true;
+  match.winner = player1Legs > player2Legs ? match.player1 : match.player2;
+
+  // Advance winner to next match in bracket
+  if (match.nextMatchId) {
+    const nextMatch = updated.challongeMatches.find((m) => m.id === match.nextMatchId);
+    if (nextMatch) {
+      if (match.nextMatchSlot === 1) {
+        nextMatch.player1 = match.winner;
+      } else if (match.nextMatchSlot === 2) {
+        nextMatch.player2 = match.winner;
+      }
+    }
+  }
+
+  // If this was the Championship Final or no next match, crown champion
+  if (match.roundName === 'Championship Final' || !match.nextMatchId) {
+    updated.champion = match.winner;
+  }
+
+  return updated;
+}
+

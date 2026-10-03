@@ -1,7 +1,8 @@
-import { Dart, GameMode, MatchState, PlayerStats } from './types';
+import { Dart, GameMode, MatchState, PlayerStats, VisitLog } from './types';
 import { getDartValue } from './checkout';
 
-export function getVisitSum(visit: Dart[]): number {
+export function getVisitSum(visit?: Dart[]): number {
+  if (!visit || !Array.isArray(visit)) return 0;
   return visit.reduce((acc, d) => acc + getDartValue(d), 0);
 }
 
@@ -35,18 +36,31 @@ export function createInitialMatchState(options: {
     mode,
     doubleOut,
     legsToWin,
+    currentLeg: 1,
     cur: 0,
     starter: 0,
     visit: [],
     over: false,
     winner: null,
     players,
+    logs: [],
     history: [],
   };
 }
 
 function cloneState(state: MatchState): MatchState {
-  return JSON.parse(JSON.stringify(state));
+  const { history, ...rest } = state;
+  const cloned = JSON.parse(JSON.stringify(rest)) as MatchState;
+  cloned.history = Array.isArray(history) ? [...history] : [];
+  if (!Array.isArray(cloned.visit)) cloned.visit = [];
+  if (!Array.isArray(cloned.logs)) cloned.logs = [];
+  if (typeof cloned.currentLeg !== 'number') cloned.currentLeg = 1;
+  return cloned;
+}
+
+function createSnapshot(state: MatchState): string {
+  const { history: _ignored, ...stateWithoutHistory } = state;
+  return JSON.stringify(stateWithoutHistory);
 }
 
 export type DartThrowResult = {
@@ -63,13 +77,14 @@ export function throwDart(currentState: MatchState, dart: Dart): DartThrowResult
 
   // Create a deep copy to ensure immutability and save snapshot to history
   const state = cloneState(currentState);
-  const snapshot = JSON.stringify(currentState);
+  const snapshot = createSnapshot(currentState);
   state.history.push(snapshot);
-  if (state.history.length > 300) {
+  if (state.history.length > 100) {
     state.history.shift();
   }
 
   const p = state.players[state.cur];
+  const scoreBefore = p.score;
   state.visit.push(dart);
 
   const sum = getVisitSum(state.visit);
@@ -82,6 +97,21 @@ export function throwDart(currentState: MatchState, dart: Dart): DartThrowResult
   const isBust = rem < 0 || (state.doubleOut && (rem === 1 || (rem === 0 && dart.m !== 2)));
 
   if (isBust) {
+    const log: VisitLog = {
+      id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      leg: state.currentLeg,
+      playerIndex: state.cur,
+      playerName: p.name,
+      scoreBefore,
+      darts: [...state.visit],
+      visitTotal: 0,
+      isBust: true,
+      isCheckout: false,
+      scoreAfter: p.score,
+      timestamp: new Date().toISOString(),
+    };
+    state.logs.push(log);
+
     p.darts += state.visit.length;
     p.lastVisit = 'Bust';
     const message = `Bust! ${p.name} stays on ${p.score}`;
@@ -92,6 +122,21 @@ export function throwDart(currentState: MatchState, dart: Dart): DartThrowResult
 
   // Leg Won / Checkout condition
   if (rem === 0) {
+    const log: VisitLog = {
+      id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      leg: state.currentLeg,
+      playerIndex: state.cur,
+      playerName: p.name,
+      scoreBefore,
+      darts: [...state.visit],
+      visitTotal: sum,
+      isBust: false,
+      isCheckout: true,
+      scoreAfter: 0,
+      timestamp: new Date().toISOString(),
+    };
+    state.logs.push(log);
+
     p.darts += state.visit.length;
     p.points += sum;
     if (sum > p.high) p.high = sum;
@@ -124,6 +169,21 @@ export function throwDart(currentState: MatchState, dart: Dart): DartThrowResult
 
   // 3 Darts completed normal visit
   if (state.visit.length === 3) {
+    const log: VisitLog = {
+      id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      leg: state.currentLeg,
+      playerIndex: state.cur,
+      playerName: p.name,
+      scoreBefore,
+      darts: [...state.visit],
+      visitTotal: sum,
+      isBust: false,
+      isCheckout: false,
+      scoreAfter: rem,
+      timestamp: new Date().toISOString(),
+    };
+    state.logs.push(log);
+
     p.darts += 3;
     p.points += sum;
     if (sum > p.high) p.high = sum;
@@ -151,13 +211,19 @@ export function throwDart(currentState: MatchState, dart: Dart): DartThrowResult
 export function startNextLeg(currentState: MatchState): MatchState {
   if (currentState.over) return currentState;
   const state = cloneState(currentState);
+  const snapshot = createSnapshot(currentState);
+  state.history.push(snapshot);
+  if (state.history.length > 100) {
+    state.history.shift();
+  }
 
   // Reset current scores to base mode
   for (const player of state.players) {
     player.score = state.mode;
   }
 
-  // Alternate starter
+  // Alternate starter and increment leg count
+  state.currentLeg = (state.currentLeg || 1) + 1;
   state.starter = (state.starter + 1) % state.players.length;
   state.cur = state.starter;
   state.visit = [];
@@ -169,7 +235,11 @@ export function undo(currentState: MatchState): MatchState {
   if (!currentState.history || currentState.history.length === 0) {
     return currentState;
   }
-  const prevSnapshot = currentState.history[currentState.history.length - 1];
+  const history = [...currentState.history];
+  const prevSnapshot = history.pop()!;
   const parsed = JSON.parse(prevSnapshot) as MatchState;
-  return parsed;
+  parsed.history = history;
+  return cloneState(parsed);
 }
+
+

@@ -7,6 +7,10 @@ import {
   saveMatchDb,
   getMatchDb,
   listMatchesDb,
+  saveMatchLogsDb,
+  getMatchLogsDb,
+  saveAuditLogDb,
+  listAuditLogsDb,
 } from '../db/database';
 import { createTournament } from '../../../src/core/tournament';
 import { createInitialMatchState } from '../../../src/core/scoring';
@@ -76,4 +80,62 @@ describe('SQLite Database Layer', () => {
     expect(allMatches.length).toBeGreaterThanOrEqual(1);
     expect(allMatches[0].id).toBe('match-101');
   });
+
+  it('saves and retrieves match visit round logs in SQLite', () => {
+    const logs = [
+      {
+        id: 'log-101-1',
+        leg: 1,
+        playerIndex: 0,
+        playerName: 'Alice',
+        scoreBefore: 501,
+        darts: [{ m: 3, n: 20 }, { m: 3, n: 20 }, { m: 3, n: 20 }],
+        visitTotal: 180,
+        isBust: false,
+        isCheckout: false,
+        scoreAfter: 321,
+        timestamp: new Date().toISOString(),
+      },
+    ];
+
+    saveMatchLogsDb(db, 'match-101', logs);
+    const retrievedLogs = getMatchLogsDb(db, 'match-101');
+    expect(retrievedLogs).toHaveLength(1);
+    expect(retrievedLogs[0].playerName).toBe('Alice');
+    expect(retrievedLogs[0].visitTotal).toBe(180);
+    expect(retrievedLogs[0].scoreAfter).toBe(321);
+  });
+
+  it('saves and retrieves audit logs with filtering by entityType and limit', () => {
+    saveAuditLogDb(db, {
+      id: 'audit-1',
+      action: 'CREATE_TOURNAMENT',
+      entityType: 'tournament',
+      entityId: 't-1',
+      details: 'Created tournament Spring Cup',
+      timestamp: '2026-10-03T10:00:00.000Z',
+    });
+
+    saveAuditLogDb(db, {
+      id: 'audit-2',
+      action: 'SAVE_MATCH',
+      entityType: 'match',
+      entityId: 'm-1',
+      details: 'Match saved with score 501',
+      timestamp: '2026-10-03T10:05:00.000Z',
+    });
+
+    const allLogs = listAuditLogsDb(db);
+    expect(allLogs).toHaveLength(2);
+    // Ordered DESC by timestamp
+    expect(allLogs[0].id).toBe('audit-2');
+
+    const matchLogsOnly = listAuditLogsDb(db, { entityType: 'match' });
+    expect(matchLogsOnly).toHaveLength(1);
+    expect(matchLogsOnly[0].action).toBe('SAVE_MATCH');
+
+    const limited = listAuditLogsDb(db, { limit: 1 });
+    expect(limited).toHaveLength(1);
+  });
 });
+

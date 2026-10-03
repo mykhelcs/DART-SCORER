@@ -5,6 +5,8 @@ import {
   apiLoadTournaments,
   apiSaveMatch,
   apiLoadMatch,
+  apiSaveAuditLog,
+  apiGetAuditLogs,
 } from '../api';
 import { createTournament } from '../../core/tournament';
 import { createInitialMatchState } from '../../core/scoring';
@@ -64,4 +66,34 @@ describe('Frontend API Client', () => {
     expect(loaded).not.toBeNull();
     expect(loaded?.players[0].name).toBe('P1');
   });
+
+  it('saves and fetches audit logs through api', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        auditLogs: [
+          {
+            id: 'a1',
+            action: 'CREATE_TOURNAMENT',
+            entityType: 'tournament',
+            timestamp: '2026-10-03T10:00:00Z',
+          },
+        ],
+      }),
+    });
+
+    const saved = await apiSaveAuditLog({
+      action: 'CREATE_TOURNAMENT',
+      entityType: 'tournament',
+      entityId: 't1',
+      details: 'Created',
+    });
+    expect(saved).toBe(true);
+
+    const logs = await apiGetAuditLogs({ limit: 10 });
+    expect(logs).toHaveLength(1);
+    expect(logs[0].action).toBe('CREATE_TOURNAMENT');
+  });
 });
+

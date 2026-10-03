@@ -166,4 +166,62 @@ describe('Scoring Engine', () => {
     expect(state.visit).toHaveLength(0);
     expect(JSON.stringify(state)).toBe(initialSnapshot);
   });
+
+  it('records detailed round logs with visit total scores and score before/after', () => {
+    let state = createInitialMatchState({ playerNames: ['Alice', 'Bob'] });
+    expect(state.currentLeg).toBe(1);
+    expect(state.logs).toEqual([]);
+
+    // Alice throws 140 (T20, T20, S20)
+    state = throwDart(state, { m: 3, n: 20 }).state;
+    state = throwDart(state, { m: 3, n: 20 }).state;
+    state = throwDart(state, { m: 1, n: 20 }).state;
+
+    expect(state.logs).toHaveLength(1);
+    const log1 = state.logs[0];
+    expect(log1.playerName).toBe('Alice');
+    expect(log1.leg).toBe(1);
+    expect(log1.scoreBefore).toBe(501);
+    expect(log1.visitTotal).toBe(140);
+    expect(log1.scoreAfter).toBe(361);
+    expect(log1.isBust).toBe(false);
+    expect(log1.isCheckout).toBe(false);
+    expect(log1.darts).toHaveLength(3);
+
+    // Bob busts from 40 with T20
+    state.players[1].score = 40;
+    state = throwDart(state, { m: 3, n: 20 }).state; // Bust!
+
+    expect(state.logs).toHaveLength(2);
+    const log2 = state.logs[1];
+    expect(log2.playerName).toBe('Bob');
+    expect(log2.scoreBefore).toBe(40);
+    expect(log2.visitTotal).toBe(0);
+    expect(log2.scoreAfter).toBe(40);
+    expect(log2.isBust).toBe(true);
+
+    // Undo should restore logs back to 1
+    state = undo(state);
+    expect(state.logs).toHaveLength(1);
+  });
+
+  it('prevents exponential snapshot history growth and keeps payload size bounded across many throws', () => {
+    let state = createInitialMatchState({ playerNames: ['Alice', 'Bob'] });
+
+    // Throw 30 darts (Alice and Bob alternating visits)
+    for (let i = 0; i < 30; i++) {
+      state = throwDart(state, { m: 1, n: 20 }).state;
+    }
+
+    const serialized = JSON.stringify(state);
+    // 30 throws should be small (< 100 KB), NOT megabytes or exponential
+    expect(serialized.length).toBeLessThan(100 * 1024);
+
+    // Verify undo still functions correctly through history stack
+    for (let i = 0; i < 5; i++) {
+      state = undo(state);
+    }
+    expect(state.history.length).toBe(25);
+  });
 });
+

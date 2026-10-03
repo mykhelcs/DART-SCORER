@@ -12,8 +12,11 @@ import { VisitTray } from './VisitTray';
 import { CheckoutHint } from './CheckoutHint';
 import { Toast } from './Toast';
 import { VictoryModal } from './VictoryModal';
+import { GameLogView } from './GameLogView';
+import { PostGameReportModal } from './PostGameReportModal';
 import { saveCurrentMatch, loadCurrentMatch, clearCurrentMatch } from '../services/storage';
-import { apiSaveMatch } from '../services/api';
+import { apiSaveMatch, apiSaveAuditLog } from '../services/api';
+import { exportGameLogsToCsv } from '../services/export';
 
 interface MatchViewProps {
   onOpenProjector?: (state: MatchState) => void;
@@ -47,15 +50,18 @@ export const MatchView: React.FC<MatchViewProps> = ({
     isMatchWin: boolean;
     winnerName: string;
   } | null>(null);
+  const [showReportModal, setShowReportModal] = useState(false);
 
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Auto-save whenever match state changes (localStorage + backend SQLite)
+  // Auto-save whenever match state changes (localStorage + debounced backend SQLite)
   useEffect(() => {
-    if (match) {
-      saveCurrentMatch(match);
+    if (!match) return;
+    saveCurrentMatch(match);
+    const timer = setTimeout(() => {
       apiSaveMatch('active', match).catch(() => {});
-    }
+    }, 250);
+    return () => clearTimeout(timer);
   }, [match]);
 
   const showToast = useCallback((msg: string, type: 'good' | 'bad' | 'neutral' = 'neutral') => {
@@ -80,32 +86,58 @@ export const MatchView: React.FC<MatchViewProps> = ({
     setVictoryModal(null);
   };
 
-  const handleThrow = (dart: Dart) => {
+  const handleThrowDarts = (darts: Dart[]) => {
     if (!match || match.over || victoryModal?.show) return;
 
-    const result = throwDart(match, dart);
-    setMatch(result.state);
+    let currentState = match;
+    let lastResult: ReturnType<typeof throwDart> | null = null;
 
-    if (result.event === 'bust') {
-      showToast(result.message || 'Bust!', 'bad');
-    } else if (result.event === 'turn_end' && result.message) {
-      showToast(result.message, 'good');
-    } else if (result.event === 'leg_won') {
+    for (const dart of darts) {
+      if (currentState.over) break;
+      lastResult = throwDart(currentState, dart);
+      currentState = lastResult.state;
+      if (
+        lastResult.event === 'bust' ||
+        lastResult.event === 'leg_won' ||
+        lastResult.event === 'match_won'
+      ) {
+        break;
+      }
+    }
+
+    if (!lastResult) return;
+    setMatch(currentState);
+
+    if (lastResult.event === 'bust') {
+      showToast(lastResult.message || 'Bust!', 'bad');
+    } else if (lastResult.event === 'turn_end' && lastResult.message) {
+      showToast(lastResult.message, 'good');
+    } else if (lastResult.event === 'leg_won') {
       setVictoryModal({
         show: true,
         isMatchWin: false,
-        winnerName: result.state.players[result.state.cur].name,
+        winnerName: lastResult.state.players[lastResult.state.cur].name,
       });
-    } else if (result.event === 'match_won') {
+    } else if (lastResult.event === 'match_won') {
       setVictoryModal({
         show: true,
         isMatchWin: true,
-        winnerName: result.state.winner || 'Winner',
+        winnerName: lastResult.state.winner || 'Winner',
       });
+      apiSaveAuditLog({
+        action: 'MATCH_WON',
+        entityType: 'match',
+        entityId: 'active',
+        details: `Match completed. Winner: ${lastResult.state.winner}`,
+      }).catch(() => {});
       if (onMatchComplete) {
-        onMatchComplete(result.state);
+        onMatchComplete(lastResult.state);
       }
     }
+  };
+
+  const handleThrow = (dart: Dart) => {
+    handleThrowDarts([dart]);
   };
 
   const handleMiss = () => {
@@ -116,6 +148,12 @@ export const MatchView: React.FC<MatchViewProps> = ({
     if (!match || match.history.length === 0 || victoryModal?.show) return;
     const previous = undo(match);
     setMatch(previous);
+    apiSaveAuditLog({
+      action: 'MATCH_UNDO',
+      entityType: 'scorer',
+      entityId: 'active',
+      details: 'Scorer undid last throw',
+    }).catch(() => {});
   };
 
   const handleNextLeg = () => {
@@ -136,39 +174,23 @@ export const MatchView: React.FC<MatchViewProps> = ({
   // Quick Score helper (translates single number like 100 into 3 darts e.g. T20, S20, D10)
   const handleQuickScore = (total: number) => {
     if (!match || match.visit.length > 0 || match.over) return;
-    // Dispatches approximate darts to match score
+    // Dispatches approximate darts to match score atomically
     if (total === 180) {
-      handleThrow({ m: 3, n: 20 });
-      handleThrow({ m: 3, n: 20 });
-      handleThrow({ m: 3, n: 20 });
+      handleThrowDarts([{ m: 3, n: 20 }, { m: 3, n: 20 }, { m: 3, n: 20 }]);
     } else if (total === 140) {
-      handleThrow({ m: 3, n: 20 });
-      handleThrow({ m: 3, n: 20 });
-      handleThrow({ m: 1, n: 20 });
+      handleThrowDarts([{ m: 3, n: 20 }, { m: 3, n: 20 }, { m: 1, n: 20 }]);
     } else if (total === 100) {
-      handleThrow({ m: 3, n: 20 });
-      handleThrow({ m: 1, n: 20 });
-      handleThrow({ m: 1, n: 20 });
+      handleThrowDarts([{ m: 3, n: 20 }, { m: 1, n: 20 }, { m: 1, n: 20 }]);
     } else if (total === 85) {
-      handleThrow({ m: 3, n: 19 });
-      handleThrow({ m: 1, n: 14 });
-      handleThrow({ m: 1, n: 14 });
+      handleThrowDarts([{ m: 3, n: 19 }, { m: 1, n: 14 }, { m: 1, n: 14 }]);
     } else if (total === 60) {
-      handleThrow({ m: 3, n: 20 });
-      handleThrow({ m: 0, n: 0 });
-      handleThrow({ m: 0, n: 0 });
+      handleThrowDarts([{ m: 3, n: 20 }, { m: 0, n: 0 }, { m: 0, n: 0 }]);
     } else if (total === 45) {
-      handleThrow({ m: 1, n: 15 });
-      handleThrow({ m: 1, n: 15 });
-      handleThrow({ m: 1, n: 15 });
+      handleThrowDarts([{ m: 1, n: 15 }, { m: 1, n: 15 }, { m: 1, n: 15 }]);
     } else if (total === 41) {
-      handleThrow({ m: 1, n: 20 });
-      handleThrow({ m: 1, n: 1 });
-      handleThrow({ m: 1, n: 20 });
+      handleThrowDarts([{ m: 1, n: 20 }, { m: 1, n: 1 }, { m: 1, n: 20 }]);
     } else if (total === 26) {
-      handleThrow({ m: 1, n: 20 });
-      handleThrow({ m: 1, n: 1 });
-      handleThrow({ m: 1, n: 5 });
+      handleThrowDarts([{ m: 1, n: 20 }, { m: 1, n: 1 }, { m: 1, n: 5 }]);
     }
   };
 
@@ -292,6 +314,40 @@ export const MatchView: React.FC<MatchViewProps> = ({
       >
         <div style={{ color: 'var(--muted)', fontSize: '0.95rem' }}>{metaText}</div>
         <div style={{ display: 'flex', gap: '8px' }}>
+          <button
+            className="btn sec"
+            onClick={() => {
+              if (!match.logs || match.logs.length === 0) {
+                showToast('No logs to export yet', 'neutral');
+                return;
+              }
+              const csv = exportGameLogsToCsv(match.logs);
+              const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+              const url = URL.createObjectURL(blob);
+              const link = document.createElement('a');
+              link.href = url;
+              link.setAttribute('download', `darts_match_logs_${Date.now()}.csv`);
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              URL.revokeObjectURL(url);
+              showToast('Match logs exported to CSV', 'good');
+            }}
+          >
+            Export CSV
+          </button>
+          <button
+            className="btn sec"
+            onClick={() => {
+              if (!match.logs || match.logs.length === 0) {
+                showToast('No logs recorded yet', 'neutral');
+                return;
+              }
+              setShowReportModal(true);
+            }}
+          >
+            📄 Report & PDF
+          </button>
           {onOpenProjector && (
             <button className="btn sec" onClick={() => onOpenProjector(match)}>
               Projector View
@@ -321,6 +377,8 @@ export const MatchView: React.FC<MatchViewProps> = ({
         </div>
       </div>
 
+      <GameLogView logs={match.logs || []} />
+
       <Toast message={toastMsg} type={toastType} />
 
       {victoryModal?.show && (
@@ -329,6 +387,14 @@ export const MatchView: React.FC<MatchViewProps> = ({
           isMatchWin={victoryModal.isMatchWin}
           winnerName={victoryModal.winnerName}
           onNextLeg={handleNextLeg}
+          onNewMatch={handleNewMatch}
+        />
+      )}
+
+      {showReportModal && (
+        <PostGameReportModal
+          match={match}
+          onClose={() => setShowReportModal(false)}
           onNewMatch={handleNewMatch}
         />
       )}

@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
-import { MatchState, TournamentState } from '../../../src/core/types';
+import { MatchState, TournamentState, VisitLog, AuditLog } from '../../../src/core/types';
 
 export function initDb(dbPathOrMemory?: string): Database.Database {
   let dbPath = dbPathOrMemory;
@@ -47,6 +47,29 @@ export function initDb(dbPathOrMemory?: string): Database.Database {
       high_score INTEGER DEFAULT 0,
       best_checkout INTEGER DEFAULT 0,
       updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS match_logs (
+      id TEXT PRIMARY KEY,
+      match_id TEXT NOT NULL,
+      leg INTEGER NOT NULL,
+      player_name TEXT NOT NULL,
+      score_before INTEGER NOT NULL,
+      darts_json TEXT NOT NULL,
+      visit_total INTEGER NOT NULL,
+      is_bust INTEGER NOT NULL,
+      is_checkout INTEGER NOT NULL,
+      score_after INTEGER NOT NULL,
+      timestamp TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id TEXT PRIMARY KEY,
+      action TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT,
+      details TEXT,
+      timestamp TEXT NOT NULL
     );
   `);
 
@@ -136,3 +159,144 @@ export function listMatchesDb(db: Database.Database): { id: string; match: Match
     match: JSON.parse(r.data_json) as MatchState,
   }));
 }
+
+export function saveMatchLogsDb(
+  db: Database.Database,
+  matchId: string,
+  logs: VisitLog[],
+): void {
+  const insertStmt = db.prepare(`
+    INSERT INTO match_logs (
+      id, match_id, leg, player_name, score_before, darts_json,
+      visit_total, is_bust, is_checkout, score_after, timestamp
+    )
+    VALUES (
+      @id, @match_id, @leg, @player_name, @score_before, @darts_json,
+      @visit_total, @is_bust, @is_checkout, @score_after, @timestamp
+    )
+    ON CONFLICT(id) DO UPDATE SET
+      visit_total = excluded.visit_total,
+      score_after = excluded.score_after
+  `);
+
+  const tx = db.transaction((items: VisitLog[]) => {
+    for (const log of items) {
+      insertStmt.run({
+        id: log.id,
+        match_id: matchId,
+        leg: log.leg ?? 1,
+        player_name: log.playerName,
+        score_before: log.scoreBefore,
+        darts_json: JSON.stringify(log.darts || []),
+        visit_total: log.visitTotal ?? 0,
+        is_bust: log.isBust ? 1 : 0,
+        is_checkout: log.isCheckout ? 1 : 0,
+        score_after: log.scoreAfter ?? 0,
+        timestamp: String(log.timestamp || new Date().toISOString()),
+      });
+    }
+  });
+
+  tx(logs);
+}
+
+export function getMatchLogsDb(db: Database.Database, matchId: string): VisitLog[] {
+  const rows = db
+    .prepare('SELECT * FROM match_logs WHERE match_id = ? ORDER BY timestamp ASC')
+    .all(matchId) as {
+      id: string;
+      leg: number;
+      player_name: string;
+      score_before: number;
+      darts_json: string;
+      visit_total: number;
+      is_bust: number;
+      is_checkout: number;
+      score_after: number;
+      timestamp: string;
+    }[];
+
+  return rows.map((r) => ({
+    id: r.id,
+    leg: r.leg,
+    playerIndex: 0,
+    playerName: r.player_name,
+    scoreBefore: r.score_before,
+    darts: JSON.parse(r.darts_json),
+    visitTotal: r.visit_total,
+    isBust: Boolean(r.is_bust),
+    isCheckout: Boolean(r.is_checkout),
+    scoreAfter: r.score_after,
+    timestamp: r.timestamp,
+  }));
+}
+
+export function saveAuditLogDb(db: Database.Database, log: AuditLog): void {
+  const stmt = db.prepare(`
+    INSERT INTO audit_logs (id, action, entity_type, entity_id, details, timestamp)
+    VALUES (@id, @action, @entity_type, @entity_id, @details, @timestamp)
+    ON CONFLICT(id) DO UPDATE SET
+      action = excluded.action,
+      entity_type = excluded.entity_type,
+      entity_id = excluded.entity_id,
+      details = excluded.details,
+      timestamp = excluded.timestamp
+  `);
+
+  stmt.run({
+    id: log.id,
+    action: log.action,
+    entity_type: log.entityType,
+    entity_id: log.entityId ?? null,
+    details: log.details ?? null,
+    timestamp: log.timestamp || new Date().toISOString(),
+  });
+}
+
+export function listAuditLogsDb(
+  db: Database.Database,
+  options?: { limit?: number; entityType?: string; entityId?: string },
+): AuditLog[] {
+  let query = 'SELECT * FROM audit_logs';
+  const params: (string | number)[] = [];
+  const whereClauses: string[] = [];
+
+  if (options?.entityType) {
+    whereClauses.push('entity_type = ?');
+    params.push(options.entityType);
+  }
+  if (options?.entityId) {
+    whereClauses.push('entity_id = ?');
+    params.push(options.entityId);
+  }
+
+  if (whereClauses.length > 0) {
+    query += ` WHERE ${whereClauses.join(' AND ')}`;
+  }
+
+  query += ' ORDER BY timestamp DESC';
+
+  if (typeof options?.limit === 'number' && options.limit > 0) {
+    query += ' LIMIT ?';
+    params.push(options.limit);
+  }
+
+  const rows = db.prepare(query).all(...params) as {
+    id: string;
+    action: string;
+    entity_type: string;
+    entity_id: string | null;
+    details: string | null;
+    timestamp: string;
+  }[];
+
+  return rows.map((r) => ({
+    id: r.id,
+    action: r.action,
+    entityType: r.entity_type as AuditLog['entityType'],
+    entityId: r.entity_id ?? undefined,
+    details: r.details ?? undefined,
+    timestamp: r.timestamp,
+  }));
+}
+

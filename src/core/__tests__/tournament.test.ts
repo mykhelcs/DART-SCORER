@@ -5,6 +5,8 @@ import {
   calculateStandings,
   generateKnockoutFromPools,
   recordKnockoutMatchResult,
+  createChallongeTournament,
+  recordChallongeMatchResult,
 } from '../tournament';
 
 describe('Tournament Engine (Pools and Knockout)', () => {
@@ -147,4 +149,89 @@ describe('Tournament Engine (Pools and Knockout)', () => {
     const semi1 = tournament.knockoutMatches.find((m) => m.round === 'Semi-Final' && m.matchNumber === 1);
     expect(semi1?.player1).toBe(qfs[0].player1);
   });
+
+  describe('Challonge-Style Bracket Engine', () => {
+    it('creates a 4-player single elimination bracket with Semi-Finals and Final', () => {
+      const tourney = createChallongeTournament({
+        name: 'Challonge Cup 4',
+        players: ['Alice', 'Bob', 'Charlie', 'Dave'],
+        legsToWin: 3,
+      });
+
+      expect(tourney.format).toBe('challonge_single_elim');
+      expect(tourney.challongeMatches).toBeDefined();
+      const matches = tourney.challongeMatches!;
+      // 2 Semis + 1 Final = 3 matches
+      expect(matches).toHaveLength(3);
+
+      const semis = matches.filter((m) => m.roundName === 'Semi-Final');
+      const finalMatch = matches.find((m) => m.roundName === 'Championship Final');
+      expect(semis).toHaveLength(2);
+      expect(finalMatch).toBeDefined();
+
+      // Seed pairings: #1 Alice vs #4 Dave, #2 Bob vs #3 Charlie
+      expect(semis[0].player1).toBe('Alice');
+      expect(semis[0].player1Seed).toBe(1);
+      expect(semis[0].player2).toBe('Dave');
+      expect(semis[0].player2Seed).toBe(4);
+
+      expect(semis[1].player1).toBe('Bob');
+      expect(semis[1].player1Seed).toBe(2);
+      expect(semis[1].player2).toBe('Charlie');
+      expect(semis[1].player2Seed).toBe(3);
+    });
+
+    it('assigns byes to top seeds when player count is not a power of 2 (e.g. 6 players in size-8 bracket)', () => {
+      const tourney = createChallongeTournament({
+        name: 'Challonge 6 Players',
+        players: ['Seed 1', 'Seed 2', 'Seed 3', 'Seed 4', 'Seed 5', 'Seed 6'],
+        legsToWin: 3,
+      });
+
+      const matches = tourney.challongeMatches!;
+      // 4 QFs + 2 Semis + 1 Final = 7 matches
+      expect(matches).toHaveLength(7);
+
+      // Seed 1 and Seed 2 receive Byes in QF and advance directly to Semis
+      const qfWithByes = matches.filter((m) => m.isBye && m.completed);
+      expect(qfWithByes).toHaveLength(2);
+
+      const semi1 = matches.find((m) => m.roundName === 'Semi-Final' && m.matchNumber === 1);
+      const semi2 = matches.find((m) => m.roundName === 'Semi-Final' && m.matchNumber === 2);
+
+      expect(semi1?.player1).toBe('Seed 1');
+      expect(semi2?.player1).toBe('Seed 2');
+    });
+
+    it('advances winners through rounds and crowns the champion upon final victory', () => {
+      let tourney = createChallongeTournament({
+        name: 'Title Match',
+        players: ['Alice', 'Bob', 'Charlie', 'Dave'],
+        legsToWin: 3,
+      });
+
+      const matches = tourney.challongeMatches!;
+      const semi1 = matches.find((m) => m.roundName === 'Semi-Final' && m.matchNumber === 1)!;
+      const semi2 = matches.find((m) => m.roundName === 'Semi-Final' && m.matchNumber === 2)!;
+
+      // Alice beats Dave 3-1 in Semi 1
+      tourney = recordChallongeMatchResult(tourney, semi1.id, 3, 1);
+      // Bob beats Charlie 3-2 in Semi 2
+      tourney = recordChallongeMatchResult(tourney, semi2.id, 3, 2);
+
+      const finalMatch = tourney.challongeMatches!.find((m) => m.roundName === 'Championship Final')!;
+      expect(finalMatch.player1).toBe('Alice');
+      expect(finalMatch.player2).toBe('Bob');
+      expect(finalMatch.completed).toBe(false);
+      expect(tourney.champion).toBeNull();
+
+      // Alice beats Bob 3-0 in Championship Final
+      tourney = recordChallongeMatchResult(tourney, finalMatch.id, 3, 0);
+      const completedFinal = tourney.challongeMatches!.find((m) => m.roundName === 'Championship Final')!;
+      expect(completedFinal.completed).toBe(true);
+      expect(completedFinal.winner).toBe('Alice');
+      expect(tourney.champion).toBe('Alice');
+    });
+  });
 });
+
