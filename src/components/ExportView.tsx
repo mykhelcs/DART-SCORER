@@ -35,9 +35,16 @@ export const ExportView: React.FC = () => {
   const fetchAuditLogs = async () => {
     setLoadingAudit(true);
     try {
-      const logs = await apiGetAuditLogs({ limit: 50 });
-      setAuditLogs(logs);
+      const isHealthy = await checkBackendHealth();
+      setBackendConnected(isHealthy);
+      if (isHealthy) {
+        const logs = await apiGetAuditLogs({ limit: 50 });
+        setAuditLogs(logs);
+      } else {
+        setAuditLogs([]);
+      }
     } catch {
+      setBackendConnected(false);
       setAuditLogs([]);
     } finally {
       setLoadingAudit(false);
@@ -45,12 +52,20 @@ export const ExportView: React.FC = () => {
   };
 
   useEffect(() => {
-    checkBackendHealth().then((isHealthy) => {
-      setBackendConnected(isHealthy);
-      if (isHealthy) {
-        fetchAuditLogs();
-      }
-    });
+    fetchAuditLogs();
+
+    // Auto-poll every 3s to detect when backend starts or reconnects
+    const interval = setInterval(async () => {
+      const isHealthy = await checkBackendHealth();
+      setBackendConnected((prev) => {
+        if (!prev && isHealthy) {
+          apiGetAuditLogs({ limit: 50 }).then(setAuditLogs).catch(() => setAuditLogs([]));
+        }
+        return isHealthy;
+      });
+    }, 3000);
+
+    return () => clearInterval(interval);
   }, []);
 
   // Match exports
@@ -305,10 +320,10 @@ export const ExportView: React.FC = () => {
           <button
             className="btn sec"
             onClick={fetchAuditLogs}
-            disabled={loadingAudit || !backendConnected}
+            disabled={loadingAudit}
             style={{ fontSize: '13px', padding: '6px 12px' }}
           >
-            {loadingAudit ? 'Refreshing...' : '↻ Refresh Logs'}
+            {loadingAudit ? 'Refreshing...' : '↻ Refresh Status & Logs'}
           </button>
         </div>
 
@@ -378,6 +393,16 @@ export const ExportView: React.FC = () => {
                 ? '● Connected (SQLite: backend/data/darts.db)'
                 : '○ Offline (Using Browser LocalStorage)'}
             </strong>
+            {!backendConnected && (
+              <button
+                className="btn sec"
+                onClick={fetchAuditLogs}
+                disabled={loadingAudit}
+                style={{ fontSize: '11px', padding: '2px 8px', marginLeft: '10px', minHeight: 'unset' }}
+              >
+                {loadingAudit ? 'Connecting...' : '↻ Reconnect'}
+              </button>
+            )}
           </li>
           <li>
             Active Match: <strong>{match ? `${match.players.map((p) => p.name).join(' vs ')}` : 'None'}</strong>
