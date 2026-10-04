@@ -93,6 +93,25 @@ describe('Backend REST API', () => {
     // 404 for missing match
     const missingRes = await request(app).get('/api/matches/non-existent');
     expect(missingRes.status).toBe(404);
+
+    // Delete existing match
+    const delRes = await request(app).delete('/api/matches/m-123');
+    expect(delRes.status).toBe(200);
+    expect(delRes.body.success).toBe(true);
+
+    // Verify it is gone
+    const verifyGet = await request(app).get('/api/matches/m-123');
+    expect(verifyGet.status).toBe(404);
+
+    // Delete non-existent returns 404
+    const delNonExistent = await request(app).delete('/api/matches/non-existent');
+    expect(delNonExistent.status).toBe(404);
+
+    // Verify deletion audit log
+    const auditLogs = listAuditLogsDb(db, { entityType: 'match' });
+    const deleteAudit = auditLogs.find((l) => l.action === 'MATCH_DELETED');
+    expect(deleteAudit).toBeDefined();
+    expect(deleteAudit?.entityId).toBe('m-123');
   });
 
   it('saves and fetches match logs via /api/matches/:id/logs', async () => {

@@ -2,18 +2,20 @@ import React, { useState } from 'react';
 import { MatchState } from './core/types';
 import { createInitialMatchState } from './core/scoring';
 import { MatchView } from './components/MatchView';
+import { MatchesDashboard } from './components/MatchesDashboard';
 import { TournamentView } from './components/TournamentView';
 import { RulesGuide } from './components/RulesGuide';
 import { ExportView } from './components/ExportView';
 import { ProjectorView } from './components/ProjectorView';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
-type Tab = 'match' | 'tournament' | 'rules' | 'export';
+type Tab = 'match' | 'matches' | 'tournament' | 'rules' | 'export';
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('match');
   const [projectorState, setProjectorState] = useState<MatchState | null>(null);
   const [presetMatch, setPresetMatch] = useState<MatchState | null>(null);
+  const [currentMatchId, setCurrentMatchId] = useState<string | undefined>(undefined);
   const [onTournamentMatchFinish, setOnTournamentMatchFinish] = useState<
     ((p1Legs: number, p2Legs: number) => void) | null
   >(null);
@@ -40,8 +42,17 @@ export const App: React.FC = () => {
       legsToWin,
       playerNames: [player1, player2],
     });
+    const matchId = `tourney-match-${Date.now()}`;
+    setCurrentMatchId(matchId);
     setPresetMatch(newMatch);
     setOnTournamentMatchFinish(() => onFinish);
+    setActiveTab('match');
+  };
+
+  const handleLoadDashboardMatch = (match: MatchState, matchId: string) => {
+    setPresetMatch(match);
+    setCurrentMatchId(matchId);
+    setOnTournamentMatchFinish(null);
     setActiveTab('match');
   };
 
@@ -75,6 +86,12 @@ export const App: React.FC = () => {
               Match Scorer
             </button>
             <button
+              className={`tab-btn ${activeTab === 'matches' ? 'active' : ''}`}
+              onClick={() => setActiveTab('matches')}
+            >
+              Matches Hub
+            </button>
+            <button
               className={`tab-btn ${activeTab === 'tournament' ? 'active' : ''}`}
               onClick={() => setActiveTab('tournament')}
             >
@@ -99,8 +116,16 @@ export const App: React.FC = () => {
           {activeTab === 'match' && (
             <MatchView
               presetMatch={presetMatch}
+              matchId={currentMatchId}
               onOpenProjector={(state) => setProjectorState(state)}
               onMatchComplete={handleMatchComplete}
+            />
+          )}
+
+          {activeTab === 'matches' && (
+            <MatchesDashboard
+              onLoadMatchForScoring={handleLoadDashboardMatch}
+              onOpenProjector={(state) => setProjectorState(state)}
             />
           )}
 

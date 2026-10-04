@@ -1,4 +1,4 @@
-import { MatchState, TournamentState, AuditLog } from '../core/types';
+import { MatchState, TournamentState, AuditLog, SavedMatchRecord } from '../core/types';
 
 const API_BASE = 'http://localhost:3001/api';
 
@@ -73,6 +73,28 @@ export async function apiLoadMatch(id: string): Promise<MatchState | null> {
     return data.match || null;
   } catch {
     return null;
+  }
+}
+
+export async function apiListMatches(): Promise<SavedMatchRecord[]> {
+  try {
+    const res = await fetch(`${API_BASE}/matches`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.matches || [];
+  } catch {
+    return [];
+  }
+}
+
+export async function apiDeleteMatch(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/matches/${id}`, {
+      method: 'DELETE',
+    });
+    return res.ok;
+  } catch {
+    return false;
   }
 }
 

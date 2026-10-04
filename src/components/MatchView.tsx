@@ -14,24 +14,37 @@ import { Toast } from './Toast';
 import { VictoryModal } from './VictoryModal';
 import { GameLogView } from './GameLogView';
 import { PostGameReportModal } from './PostGameReportModal';
-import { saveCurrentMatch, loadCurrentMatch, clearCurrentMatch } from '../services/storage';
+import { saveCurrentMatch, loadCurrentMatch, clearCurrentMatch, saveStoredMatch } from '../services/storage';
 import { apiSaveMatch, apiSaveAuditLog } from '../services/api';
 import { exportGameLogsToCsv } from '../services/export';
 
 interface MatchViewProps {
   onOpenProjector?: (state: MatchState) => void;
   presetMatch?: MatchState | null;
+  matchId?: string;
   onMatchComplete?: (state: MatchState) => void;
 }
 
 export const MatchView: React.FC<MatchViewProps> = ({
   onOpenProjector,
   presetMatch,
+  matchId: initialMatchId,
   onMatchComplete,
 }) => {
+  const [currentMatchId, setCurrentMatchId] = useState<string>(() => initialMatchId || `match-${Date.now()}`);
   const [match, setMatch] = useState<MatchState | null>(() => {
     return presetMatch ?? loadCurrentMatch();
   });
+
+  useEffect(() => {
+    if (presetMatch) {
+      setMatch(presetMatch);
+      setVictoryModal(null);
+      if (initialMatchId) {
+        setCurrentMatchId(initialMatchId);
+      }
+    }
+  }, [presetMatch, initialMatchId]);
 
   // Setup form states
   const [p1, setP1] = useState('Player 1');
@@ -58,11 +71,13 @@ export const MatchView: React.FC<MatchViewProps> = ({
   useEffect(() => {
     if (!match) return;
     saveCurrentMatch(match);
+    saveStoredMatch(currentMatchId, match);
     const timer = setTimeout(() => {
+      apiSaveMatch(currentMatchId, match).catch(() => {});
       apiSaveMatch('active', match).catch(() => {});
     }, 250);
     return () => clearTimeout(timer);
-  }, [match]);
+  }, [match, currentMatchId]);
 
   const showToast = useCallback((msg: string, type: 'good' | 'bad' | 'neutral' = 'neutral') => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -82,8 +97,12 @@ export const MatchView: React.FC<MatchViewProps> = ({
       legsToWin: legs,
       playerNames,
     });
+    const newId = `match-${Date.now()}`;
+    setCurrentMatchId(newId);
     setMatch(newMatch);
     setVictoryModal(null);
+    saveStoredMatch(newId, newMatch);
+    apiSaveMatch(newId, newMatch).catch(() => {});
   };
 
   const handleThrowDarts = (darts: Dart[]) => {

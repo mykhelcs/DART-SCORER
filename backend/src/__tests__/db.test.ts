@@ -7,6 +7,7 @@ import {
   saveMatchDb,
   getMatchDb,
   listMatchesDb,
+  deleteMatchDb,
   saveMatchLogsDb,
   getMatchLogsDb,
   saveAuditLogDb,
@@ -136,6 +137,39 @@ describe('SQLite Database Layer', () => {
 
     const limited = listAuditLogsDb(db, { limit: 1 });
     expect(limited).toHaveLength(1);
+  });
+
+  it('deletes a match and cleans up associated match logs', () => {
+    const match = createInitialMatchState({ playerNames: ['Alice', 'Bob'] });
+    saveMatchDb(db, 'match-to-delete', match);
+
+    saveMatchLogsDb(db, 'match-to-delete', [
+      {
+        id: 'log-del-1',
+        leg: 1,
+        playerIndex: 0,
+        playerName: 'Alice',
+        scoreBefore: 501,
+        darts: [{ m: 3, n: 20 }],
+        visitTotal: 60,
+        isBust: false,
+        isCheckout: false,
+        scoreAfter: 441,
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+
+    expect(getMatchDb(db, 'match-to-delete')).not.toBeNull();
+    expect(getMatchLogsDb(db, 'match-to-delete')).toHaveLength(1);
+
+    const deleted = deleteMatchDb(db, 'match-to-delete');
+    expect(deleted).toBe(true);
+
+    expect(getMatchDb(db, 'match-to-delete')).toBeNull();
+    expect(getMatchLogsDb(db, 'match-to-delete')).toHaveLength(0);
+
+    // Deleting non-existent returns false
+    expect(deleteMatchDb(db, 'match-to-delete')).toBe(false);
   });
 });
 

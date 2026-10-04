@@ -50,6 +50,14 @@ export interface MatchState {
   history: string[]; // Serialized state snapshots for multi-level undo
 }
 
+export interface SavedMatchRecord {
+  id: string;
+  tournamentId?: string;
+  match: MatchState;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface AuditLog {
   id: string;
   action: string;

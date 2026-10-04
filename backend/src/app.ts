@@ -8,6 +8,7 @@ import {
   saveMatchDb,
   getMatchDb,
   listMatchesDb,
+  deleteMatchDb,
   saveMatchLogsDb,
   getMatchLogsDb,
   saveAuditLogDb,
@@ -169,6 +170,36 @@ export function createServerApp(
         timestamp: new Date().toISOString(),
       });
       res.json({ id: matchId, match });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  app.delete('/api/matches/:id', (req: Request, res: Response) => {
+    try {
+      const id = String(req.params.id);
+      const existing = getMatchDb(db, id);
+      if (!existing) {
+        res.status(404).json({ error: 'Match not found.' });
+        return;
+      }
+
+      const deleted = deleteMatchDb(db, id);
+      if (!deleted) {
+        res.status(404).json({ error: 'Match could not be deleted.' });
+        return;
+      }
+
+      saveAuditLogDb(db, {
+        id: `audit-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        action: 'MATCH_DELETED',
+        entityType: 'match',
+        entityId: id,
+        details: `Match ${id} deleted`,
+        timestamp: new Date().toISOString(),
+      });
+
+      res.json({ success: true, message: 'Match deleted.' });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
     }

@@ -1,6 +1,7 @@
-import { MatchState, TournamentState } from '../core/types';
+import { MatchState, TournamentState, SavedMatchRecord } from '../core/types';
 
 const MATCH_KEY = 'darts_scorer_active_match';
+const MATCHES_CATALOG_KEY = 'darts_scorer_matches_catalog';
 const TOURNAMENT_KEY = 'darts_scorer_active_tournament';
 
 export function saveCurrentMatch(match: MatchState): void {
@@ -53,6 +54,61 @@ export function clearCurrentMatch(): void {
     localStorage.removeItem(MATCH_KEY);
   } catch (e) {
     console.error('Failed to clear match', e);
+  }
+}
+
+export function saveStoredMatch(id: string, match: MatchState, tournamentId?: string): void {
+  try {
+    const list = listStoredMatches();
+    const now = new Date().toISOString();
+    const existingIndex = list.findIndex((m) => m.id === id);
+    const item: SavedMatchRecord = {
+      id,
+      tournamentId,
+      match,
+      createdAt: existingIndex >= 0 ? list[existingIndex].createdAt || now : now,
+      updatedAt: now,
+    };
+    if (existingIndex >= 0) {
+      list[existingIndex] = item;
+    } else {
+      list.unshift(item);
+    }
+    localStorage.setItem(MATCHES_CATALOG_KEY, JSON.stringify(list));
+  } catch (e) {
+    console.error('Failed to save stored match', e);
+  }
+}
+
+export function listStoredMatches(): SavedMatchRecord[] {
+  try {
+    const raw = localStorage.getItem(MATCHES_CATALOG_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed as SavedMatchRecord[];
+  } catch (e) {
+    console.error('Failed to load stored matches', e);
+    return [];
+  }
+}
+
+export function getStoredMatch(id: string): MatchState | null {
+  const list = listStoredMatches();
+  const found = list.find((m) => m.id === id);
+  return found ? found.match : null;
+}
+
+export function deleteStoredMatch(id: string): boolean {
+  try {
+    const list = listStoredMatches();
+    const next = list.filter((m) => m.id !== id);
+    if (next.length === list.length) return false;
+    localStorage.setItem(MATCHES_CATALOG_KEY, JSON.stringify(next));
+    return true;
+  } catch (e) {
+    console.error('Failed to delete stored match', e);
+    return false;
   }
 }
 

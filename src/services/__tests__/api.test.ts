@@ -5,6 +5,8 @@ import {
   apiLoadTournaments,
   apiSaveMatch,
   apiLoadMatch,
+  apiListMatches,
+  apiDeleteMatch,
   apiSaveAuditLog,
   apiGetAuditLogs,
 } from '../api';
@@ -65,6 +67,41 @@ describe('Frontend API Client', () => {
     const loaded = await apiLoadMatch('m1');
     expect(loaded).not.toBeNull();
     expect(loaded?.players[0].name).toBe('P1');
+  });
+
+  it('lists and deletes matches through api', async () => {
+    const match = createInitialMatchState({ playerNames: ['Alice', 'Bob'] });
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        matches: [{ id: 'match-1', match, createdAt: '2026-10-04T00:00:00Z', updatedAt: '2026-10-04T00:00:00Z' }],
+      }),
+    });
+
+    const matches = await apiListMatches();
+    expect(matches).toHaveLength(1);
+    expect(matches[0].id).toBe('match-1');
+
+    // Test delete
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true }),
+    });
+
+    const deleted = await apiDeleteMatch('match-1');
+    expect(deleted).toBe(true);
+
+    // Test delete failure
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+    });
+
+    const failDelete = await apiDeleteMatch('match-999');
+    expect(failDelete).toBe(false);
   });
 
   it('saves and fetches audit logs through api', async () => {

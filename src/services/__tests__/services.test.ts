@@ -12,6 +12,10 @@ import {
   saveCurrentMatch,
   loadCurrentMatch,
   clearCurrentMatch,
+  saveStoredMatch,
+  listStoredMatches,
+  getStoredMatch,
+  deleteStoredMatch,
   saveTournament,
   loadTournament,
   clearTournament,
@@ -61,6 +65,33 @@ describe('Storage and Export Services', () => {
     clearTournament();
     loaded = loadTournament();
     expect(loaded).toBeNull();
+  });
+
+  it('manages multiple stored matches with CRUD operations', () => {
+    const m1 = createInitialMatchState({ playerNames: ['P1', 'P2'] });
+    const m2 = createInitialMatchState({ playerNames: ['P3', 'P4'] });
+
+    saveStoredMatch('match-1', m1);
+    saveStoredMatch('match-2', m2);
+
+    const list = listStoredMatches();
+    expect(list).toHaveLength(2);
+    expect(list.map((m) => m.id)).toContain('match-1');
+    expect(list.map((m) => m.id)).toContain('match-2');
+
+    const retrieved = getStoredMatch('match-1');
+    expect(retrieved?.players[0].name).toBe('P1');
+
+    const deleted = deleteStoredMatch('match-1');
+    expect(deleted).toBe(true);
+
+    const afterDelete = listStoredMatches();
+    expect(afterDelete).toHaveLength(1);
+    expect(afterDelete[0].id).toBe('match-2');
+    expect(getStoredMatch('match-1')).toBeNull();
+
+    // Deleting non-existent returns false
+    expect(deleteStoredMatch('match-non-existent')).toBe(false);
   });
 
   it('exports standings to properly formatted CSV', () => {

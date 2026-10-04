@@ -149,15 +149,40 @@ export function getMatchDb(db: Database.Database, id: string): MatchState | null
   return JSON.parse(row.data_json) as MatchState;
 }
 
-export function listMatchesDb(db: Database.Database): { id: string; match: MatchState }[] {
+export function listMatchesDb(db: Database.Database): {
+  id: string;
+  tournamentId?: string;
+  match: MatchState;
+  createdAt?: string;
+  updatedAt?: string;
+}[] {
   const rows = db
-    .prepare('SELECT id, data_json FROM matches ORDER BY updated_at DESC')
-    .all() as { id: string; data_json: string }[];
+    .prepare('SELECT id, tournament_id, data_json, created_at, updated_at FROM matches ORDER BY updated_at DESC')
+    .all() as {
+      id: string;
+      tournament_id: string | null;
+      data_json: string;
+      created_at: string;
+      updated_at: string;
+    }[];
 
   return rows.map((r) => ({
     id: r.id,
+    tournamentId: r.tournament_id ?? undefined,
     match: JSON.parse(r.data_json) as MatchState,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
   }));
+}
+
+export function deleteMatchDb(db: Database.Database, id: string): boolean {
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM match_logs WHERE match_id = ?').run(id);
+    const result = db.prepare('DELETE FROM matches WHERE id = ?').run(id);
+    return result.changes > 0;
+  });
+
+  return tx();
 }
 
 export function saveMatchLogsDb(
