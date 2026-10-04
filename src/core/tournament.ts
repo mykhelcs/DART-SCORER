@@ -191,11 +191,15 @@ export function generateKnockoutFromPools(tournament: TournamentState): Tourname
 
   if (advancingPlayers.length <= 4) {
     // 2 Semi-Finals + 1 Final
-    // Match 1: Pool A #1 vs Pool B #2 (or runner up)
-    const p1A = advancingPlayers.find((p) => p.rank === 1)?.name ?? advancingPlayers[0]?.name ?? null;
-    const p2B = advancingPlayers.filter((p) => p.rank === 2)[0]?.name ?? advancingPlayers[1]?.name ?? null;
-    const p1B = advancingPlayers.filter((p) => p.rank === 1)[1]?.name ?? advancingPlayers[2]?.name ?? null;
-    const p2A = advancingPlayers.filter((p) => p.rank === 2)[1]?.name ?? advancingPlayers[3]?.name ?? null;
+    // Match 1: Pool A #1 vs Pool B #2
+    // Match 2: Pool B #1 vs Pool A #2
+    const pool1Name = updated.pools[0]?.name;
+    const pool2Name = updated.pools[1]?.name;
+
+    const p1A = advancingPlayers.find((p) => p.poolName === pool1Name && p.rank === 1)?.name ?? advancingPlayers[0]?.name ?? null;
+    const p2A = advancingPlayers.find((p) => p.poolName === pool1Name && p.rank === 2)?.name ?? advancingPlayers[1]?.name ?? null;
+    const p1B = advancingPlayers.find((p) => p.poolName === pool2Name && p.rank === 1)?.name ?? advancingPlayers[2]?.name ?? null;
+    const p2B = advancingPlayers.find((p) => p.poolName === pool2Name && p.rank === 2)?.name ?? advancingPlayers[3]?.name ?? null;
 
     matches.push({
       id: 'ko-semi-1',
@@ -534,4 +538,178 @@ export function recordChallongeMatchResult(
 
   return updated;
 }
+
+export interface PlayableTournamentMatch {
+  id: string;
+  tournamentId: string;
+  player1: string;
+  player2: string;
+  legsToWin: number;
+  roundName: string;
+  stage: 'pool' | 'knockout' | 'challonge';
+  completed: boolean;
+  winner: string | null;
+  player1Legs?: number;
+  player2Legs?: number;
+}
+
+export function areAllPoolMatchesCompleted(tournament: TournamentState): boolean {
+  if (!tournament.pools || tournament.pools.length === 0) return false;
+  return tournament.pools.every(
+    (pool) => pool.fixtures.length > 0 && pool.fixtures.every((f) => f.played),
+  );
+}
+
+export function getPlayableTournamentMatches(
+  tournament: TournamentState,
+): PlayableTournamentMatch[] {
+  const result: PlayableTournamentMatch[] = [];
+
+  if (tournament.format === 'challonge_single_elim') {
+    for (const m of tournament.challongeMatches || []) {
+      if (m.player1 && m.player2) {
+        result.push({
+          id: `${tournament.id}-${m.id}`,
+          tournamentId: tournament.id,
+          player1: m.player1,
+          player2: m.player2,
+          legsToWin: m.legsToWin,
+          roundName: m.roundName,
+          stage: 'challonge',
+          completed: m.completed,
+          winner: m.winner,
+          player1Legs: m.player1Legs,
+          player2Legs: m.player2Legs,
+        });
+      }
+    }
+    return result;
+  }
+
+  // Knockout matches with ready players
+  for (const km of tournament.knockoutMatches || []) {
+    if (km.player1 && km.player2) {
+      result.push({
+        id: `${tournament.id}-${km.id}`,
+        tournamentId: tournament.id,
+        player1: km.player1,
+        player2: km.player2,
+        legsToWin: km.legsToWin,
+        roundName: km.round,
+        stage: 'knockout',
+        completed: km.completed,
+        winner: km.winner,
+        player1Legs: km.player1Legs,
+        player2Legs: km.player2Legs,
+      });
+    }
+  }
+
+  // Pool fixtures
+  for (const pool of tournament.pools || []) {
+    for (const fix of pool.fixtures || []) {
+      result.push({
+        id: `${tournament.id}-${fix.id}`,
+        tournamentId: tournament.id,
+        player1: fix.player1,
+        player2: fix.player2,
+        legsToWin: fix.legsToWin,
+        roundName: `${pool.name} Fixture`,
+        stage: 'pool',
+        completed: fix.played,
+        winner: fix.winner ?? null,
+        player1Legs: fix.player1Score,
+        player2Legs: fix.player2Score,
+      });
+    }
+  }
+
+  return result;
+}
+
+export function advanceTournamentProgression(
+  tournament: TournamentState,
+  previousTournament?: TournamentState,
+): {
+  updatedTournament: TournamentState;
+  stageEvent?: 'pools_completed' | 'finalists_set' | 'champion_crowned';
+} {
+  let updated: TournamentState = {
+    ...tournament,
+    pools: tournament.pools ? tournament.pools.map((p) => ({ ...p, fixtures: [...p.fixtures] })) : [],
+    knockoutMatches: tournament.knockoutMatches ? tournament.knockoutMatches.map((m) => ({ ...m })) : [],
+    challongeMatches: tournament.challongeMatches ? tournament.challongeMatches.map((m) => ({ ...m })) : [],
+  };
+
+  // Challonge single-elim progression check
+  if (tournament.format === 'challonge_single_elim') {
+    const finalMatch = updated.challongeMatches?.find(
+      (m) => m.roundName === 'Championship Final' || !m.nextMatchId,
+    );
+    if (finalMatch && finalMatch.completed && finalMatch.winner && !previousTournament?.champion) {
+      updated.champion = finalMatch.winner;
+      return { updatedTournament: updated, stageEvent: 'champion_crowned' };
+    }
+    return { updatedTournament: updated };
+  }
+
+  // Pools + Knockout format progression check
+  const poolsDone = areAllPoolMatchesCompleted(updated);
+  if (poolsDone) {
+    // 1. Generate knockout bracket automatically if not generated yet
+    if (!updated.knockoutMatches || updated.knockoutMatches.length === 0) {
+      updated = generateKnockoutFromPools(updated);
+      return { updatedTournament: updated, stageEvent: 'pools_completed' };
+    }
+
+    // 2. Check Quarter-Finals progression into Semis (for > 2 pools, e.g. 16 players)
+    const qfMatches = updated.knockoutMatches.filter((m) => m.round === 'Quarter-Final');
+    if (qfMatches.length > 0 && qfMatches.every((m) => m.completed)) {
+      const semi1 = updated.knockoutMatches.find((m) => m.id === 'ko-semi-1');
+      const semi2 = updated.knockoutMatches.find((m) => m.id === 'ko-semi-2');
+      if (semi1 && (!semi1.player1 || !semi1.player2)) {
+        semi1.player1 = qfMatches[0]?.winner ?? null;
+        semi1.player2 = qfMatches[1]?.winner ?? null;
+      }
+      if (semi2 && (!semi2.player1 || !semi2.player2)) {
+        semi2.player1 = qfMatches[2]?.winner ?? null;
+        semi2.player2 = qfMatches[3]?.winner ?? null;
+      }
+    }
+
+    // 3. Check Semifinals progression into Championship Final
+    const semiMatches = updated.knockoutMatches.filter((m) => m.round === 'Semi-Final');
+    const finalMatch = updated.knockoutMatches.find((m) => m.round === 'Final');
+    const semi1 = semiMatches.find((m) => m.matchNumber === 1);
+    const semi2 = semiMatches.find((m) => m.matchNumber === 2);
+
+    if (finalMatch && semi1?.winner && semi2?.winner) {
+      finalMatch.player1 = semi1.winner;
+      finalMatch.player2 = semi2.winner;
+    }
+
+    const prevSemisDone = previousTournament?.knockoutMatches
+      ? previousTournament.knockoutMatches.filter((m) => m.round === 'Semi-Final').every((m) => m.completed)
+      : false;
+    const nowSemisDone = semiMatches.length > 0 && semiMatches.every((m) => m.completed);
+
+    if (nowSemisDone && !prevSemisDone && finalMatch && !finalMatch.completed) {
+      return { updatedTournament: updated, stageEvent: 'finalists_set' };
+    }
+
+    // 4. Check Championship Final completion
+    if (finalMatch && finalMatch.completed && finalMatch.winner) {
+      const prevFinalDone = Boolean(
+        previousTournament?.knockoutMatches?.find((m) => m.round === 'Final')?.completed,
+      );
+      updated.champion = finalMatch.winner;
+      if (!prevFinalDone || !previousTournament?.champion) {
+        return { updatedTournament: updated, stageEvent: 'champion_crowned' };
+      }
+    }
+  }
+
+  return { updatedTournament: updated };
+}
+
 

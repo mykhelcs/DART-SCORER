@@ -3,16 +3,26 @@ import { TournamentState, PoolGroup, KnockoutMatch, TournamentFormat } from '../
 import {
   createTournament,
   createChallongeTournament,
-  recordPoolMatchResult,
   generateKnockoutFromPools,
-  recordKnockoutMatchResult,
   calculateStandings,
+  areAllPoolMatchesCompleted,
 } from '../core/tournament';
-import { saveTournament, loadTournament, clearTournament } from '../services/storage';
+import {
+  saveTournament,
+  loadTournament,
+  clearTournament,
+  clearCurrentMatch,
+} from '../services/storage';
 import { exportStandingsToCsv, exportTournamentBracketToPdf, downloadFile } from '../services/export';
 import { apiSaveTournament } from '../services/api';
+import {
+  syncTournamentToMatchesCatalog,
+  handleTournamentMatchCompleted,
+} from '../services/tournamentSync';
+import { createInitialMatchState } from '../core/scoring';
 import { BracketPreview } from './BracketPreview';
 import { ChallongeBracketView } from './ChallongeBracketView';
+import { Toast } from './Toast';
 
 interface TournamentViewProps {
   onLoadMatchForScoring?: (
@@ -20,6 +30,7 @@ interface TournamentViewProps {
     player2: string,
     legsToWin: number,
     onFinish: (p1Legs: number, p2Legs: number) => void,
+    matchId?: string,
   ) => void;
 }
 
@@ -38,6 +49,18 @@ export const TournamentView: React.FC<TournamentViewProps> = ({ onLoadMatchForSc
 
   // Active sub-tab: 'pools' | 'bracket'
   const [activeTab, setActiveTab] = useState<'pools' | 'bracket'>('pools');
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [toastType, setToastType] = useState<'good' | 'bad' | 'neutral'>('good');
+
+  const showToast = (msg: string, type: 'good' | 'bad' | 'neutral' = 'good') => {
+    setToastMsg(msg);
+    setToastType(type);
+    setTimeout(() => setToastMsg(null), 4500);
+  };
+
+  useEffect(() => {
+    setTournament(loadTournament());
+  }, []);
 
   useEffect(() => {
     if (tournament) {
@@ -72,35 +95,46 @@ export const TournamentView: React.FC<TournamentViewProps> = ({ onLoadMatchForSc
         name: tourneyName,
         players,
         poolLegsToWin: poolLegs,
+        koQuarterLegsToWin: poolLegs,
         koSemiLegsToWin: semiLegs,
         koFinalLegsToWin: finalLegs,
       });
     }
 
     setTournament(newTourney);
+    syncTournamentToMatchesCatalog(newTourney).catch(() => {});
     setActiveTab(format === 'challonge_single_elim' ? 'bracket' : 'pools');
+    showToast(
+      format === 'challonge_single_elim'
+        ? 'Challonge bracket created! Matches added to Matches Hub.'
+        : 'Tournament created! First round pool matches automatically generated in Matches Hub.',
+      'good',
+    );
   };
 
   const handleResetTournament = () => {
     if (window.confirm('Reset this tournament and erase progress?')) {
       clearTournament();
+      clearCurrentMatch();
       setTournament(null);
     }
   };
 
-  const handleQuickPoolScore = (poolId: string, fixtureId: string) => {
+  const handleQuickPoolScore = async (poolId: string, fixtureId: string) => {
     const pool = tournament?.pools.find((p) => p.id === poolId);
     const fix = pool?.fixtures.find((f) => f.id === fixtureId);
     if (!pool || !fix || !tournament) return;
 
+    const deterministicMatchId = `${tournament.id}-${fix.id}`;
+
     if (onLoadMatchForScoring) {
-      onLoadMatchForScoring(fix.player1, fix.player2, fix.legsToWin, (p1Legs, p2Legs) => {
-        const updated = recordPoolMatchResult(tournament, poolId, fixtureId, {
-          player1Legs: p1Legs,
-          player2Legs: p2Legs,
-        });
-        setTournament(updated);
-      });
+      onLoadMatchForScoring(
+        fix.player1,
+        fix.player2,
+        fix.legsToWin,
+        () => {},
+        deterministicMatchId,
+      );
       return;
     }
 
@@ -110,31 +144,49 @@ export const TournamentView: React.FC<TournamentViewProps> = ({ onLoadMatchForSc
     const p2Score = prompt(`Legs won by ${fix.player2}:`, '0');
     if (p2Score === null) return;
 
-    const updated = recordPoolMatchResult(tournament, poolId, fixtureId, {
-      player1Legs: parseInt(p1Score, 10) || 0,
-      player2Legs: parseInt(p2Score, 10) || 0,
+    const p1Legs = parseInt(p1Score, 10) || 0;
+    const p2Legs = parseInt(p2Score, 10) || 0;
+
+    const matchState = createInitialMatchState({
+      playerNames: [fix.player1, fix.player2],
+      mode: 501,
+      legsToWin: fix.legsToWin,
+      doubleOut: true,
     });
-    setTournament(updated);
+    matchState.players[0].legs = p1Legs;
+    matchState.players[1].legs = p2Legs;
+    matchState.winner = p1Legs > p2Legs ? fix.player1 : p2Legs > p1Legs ? fix.player2 : null;
+    matchState.over = !!matchState.winner;
+
+    const res = await handleTournamentMatchCompleted(tournament, deterministicMatchId, matchState);
+    setTournament(res.updatedTournament);
+    if (res.stageEvent === 'pools_completed') {
+      setActiveTab('bracket');
+      showToast('🎉 All pool matches complete! Knockout Semifinals are automatically generated.', 'good');
+    }
   };
 
   const handleGenerateBracket = () => {
     if (!tournament) return;
     const updated = generateKnockoutFromPools(tournament);
     setTournament(updated);
+    syncTournamentToMatchesCatalog(updated).catch(() => {});
     setActiveTab('bracket');
   };
 
-  const handleScoreKnockoutMatch = (match: KnockoutMatch) => {
+  const handleScoreKnockoutMatch = async (match: KnockoutMatch) => {
     if (!tournament || match.completed || !match.player1 || !match.player2) return;
 
+    const deterministicMatchId = `${tournament.id}-${match.id}`;
+
     if (onLoadMatchForScoring) {
-      onLoadMatchForScoring(match.player1, match.player2, match.legsToWin, (p1Legs, p2Legs) => {
-        const updated = recordKnockoutMatchResult(tournament, match.id, {
-          player1Legs: p1Legs,
-          player2Legs: p2Legs,
-        });
-        setTournament(updated);
-      });
+      onLoadMatchForScoring(
+        match.player1,
+        match.player2,
+        match.legsToWin,
+        () => {},
+        deterministicMatchId,
+      );
       return;
     }
 
@@ -143,11 +195,27 @@ export const TournamentView: React.FC<TournamentViewProps> = ({ onLoadMatchForSc
     const p2Score = prompt(`Legs won by ${match.player2}:`, '0');
     if (p2Score === null) return;
 
-    const updated = recordKnockoutMatchResult(tournament, match.id, {
-      player1Legs: parseInt(p1Score, 10) || 0,
-      player2Legs: parseInt(p2Score, 10) || 0,
+    const p1Legs = parseInt(p1Score, 10) || 0;
+    const p2Legs = parseInt(p2Score, 10) || 0;
+
+    const matchState = createInitialMatchState({
+      playerNames: [match.player1, match.player2],
+      mode: 501,
+      legsToWin: match.legsToWin,
+      doubleOut: true,
     });
-    setTournament(updated);
+    matchState.players[0].legs = p1Legs;
+    matchState.players[1].legs = p2Legs;
+    matchState.winner = p1Legs > p2Legs ? match.player1 : match.player2;
+    matchState.over = !!matchState.winner;
+
+    const res = await handleTournamentMatchCompleted(tournament, deterministicMatchId, matchState);
+    setTournament(res.updatedTournament);
+    if (res.stageEvent === 'finalists_set') {
+      showToast('🏆 Semifinals complete! Championship Final match generated.', 'good');
+    } else if (res.stageEvent === 'champion_crowned') {
+      showToast(`🎉 Champion Crowned: ${res.updatedTournament.champion}!`, 'good');
+    }
   };
 
   const handleExportPoolCsv = (pool: PoolGroup) => {
@@ -268,6 +336,7 @@ export const TournamentView: React.FC<TournamentViewProps> = ({ onLoadMatchForSc
                 value={poolLegs}
                 onChange={(e) => setPoolLegs(Number(e.target.value))}
               >
+                <option value={1}>1 leg (Sudden Death / Fast)</option>
                 <option value={2}>2 legs (First to 2)</option>
                 <option value={3}>3 legs (First to 3)</option>
               </select>
@@ -280,6 +349,7 @@ export const TournamentView: React.FC<TournamentViewProps> = ({ onLoadMatchForSc
                 value={semiLegs}
                 onChange={(e) => setSemiLegs(Number(e.target.value))}
               >
+                <option value={1}>1 leg</option>
                 <option value={2}>2 legs</option>
                 <option value={3}>3 legs</option>
                 <option value={4}>4 legs</option>
@@ -294,6 +364,8 @@ export const TournamentView: React.FC<TournamentViewProps> = ({ onLoadMatchForSc
               value={finalLegs}
               onChange={(e) => setFinalLegs(Number(e.target.value))}
             >
+              <option value={1}>1 leg</option>
+              <option value={2}>2 legs</option>
               <option value={3}>3 legs</option>
               <option value={4}>4 legs</option>
               <option value={5}>5 legs (Standard)</option>
@@ -375,6 +447,155 @@ export const TournamentView: React.FC<TournamentViewProps> = ({ onLoadMatchForSc
           </button>
         </div>
       </div>
+
+      {toastMsg && <Toast message={toastMsg} type={toastType} />}
+
+      {/* Stage Progression Ribbon for Pools + Knockout */}
+      {tournament.format !== 'challonge_single_elim' && (() => {
+        const poolsDone = areAllPoolMatchesCompleted(tournament);
+        const semiMatches = tournament.knockoutMatches.filter((m) => m.round === 'Semi-Final');
+        const finalMatch = tournament.knockoutMatches.find((m) => m.round === 'Final');
+        const semisDone = semiMatches.length > 0 && semiMatches.every((m) => m.completed);
+        const finalDone = !!(finalMatch && finalMatch.completed);
+
+        return (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              background: 'var(--card)',
+              borderRadius: '10px',
+              padding: '12px 18px',
+              marginBottom: '18px',
+              border: '1px solid var(--line)',
+              gap: '12px',
+              flexWrap: 'wrap',
+            }}
+          >
+            {/* Step 1: Pools */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', opacity: poolsDone ? 0.75 : 1 }}>
+              <span
+                style={{
+                  width: '26px',
+                  height: '26px',
+                  borderRadius: '50%',
+                  background: poolsDone ? '#10b981' : '#3b82f6',
+                  color: '#fff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontWeight: 'bold',
+                  fontSize: '0.85rem',
+                }}
+              >
+                {poolsDone ? '✓' : '1'}
+              </span>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>Stage 1: Pool Stage</div>
+                <div style={{ fontSize: '0.75rem', color: poolsDone ? '#10b981' : '#60a5fa' }}>
+                  {poolsDone ? 'All Fixtures Completed' : 'In Progress (Round-Robin)'}
+                </div>
+              </div>
+            </div>
+
+            <span style={{ color: 'var(--muted)', fontWeight: 'bold' }}>&rarr;</span>
+
+            {/* Step 2: Semifinals */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                opacity: !poolsDone ? 0.45 : semisDone ? 0.75 : 1,
+              }}
+            >
+              <span
+                style={{
+                  width: '26px',
+                  height: '26px',
+                  borderRadius: '50%',
+                  background: semisDone ? '#10b981' : poolsDone ? '#3b82f6' : '#475569',
+                  color: '#fff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontWeight: 'bold',
+                  fontSize: '0.85rem',
+                }}
+              >
+                {semisDone ? '✓' : '2'}
+              </span>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>Stage 2: Knockout Semifinals</div>
+                <div
+                  style={{
+                    fontSize: '0.75rem',
+                    color: semisDone ? '#10b981' : poolsDone ? '#60a5fa' : 'var(--muted)',
+                  }}
+                >
+                  {semisDone ? 'Finalists Qualified' : poolsDone ? 'In Progress' : 'Awaiting Pool Results'}
+                </div>
+              </div>
+            </div>
+
+            <span style={{ color: 'var(--muted)', fontWeight: 'bold' }}>&rarr;</span>
+
+            {/* Step 3: Championship Final */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                opacity: !semisDone ? 0.45 : finalDone ? 0.75 : 1,
+              }}
+            >
+              <span
+                style={{
+                  width: '26px',
+                  height: '26px',
+                  borderRadius: '50%',
+                  background: finalDone ? '#10b981' : semisDone ? '#3b82f6' : '#475569',
+                  color: '#fff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontWeight: 'bold',
+                  fontSize: '0.85rem',
+                }}
+              >
+                {finalDone ? '✓' : '3'}
+              </span>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>Stage 3: Championship Final</div>
+                <div
+                  style={{
+                    fontSize: '0.75rem',
+                    color: finalDone ? '#10b981' : semisDone ? '#60a5fa' : 'var(--muted)',
+                  }}
+                >
+                  {finalDone ? 'Champion Crowned' : semisDone ? 'Championship Match Ready' : 'Awaiting Semifinals'}
+                </div>
+              </div>
+            </div>
+
+            {tournament.champion && (
+              <>
+                <span style={{ color: 'var(--muted)', fontWeight: 'bold' }}>&rarr;</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '1.3rem' }}>🏆</span>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--brass)' }}>
+                      {tournament.champion}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--brass)' }}>Champion!</div>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        );
+      })()}
 
       {tournament.format === 'challonge_single_elim' ? (
         <ChallongeBracketView

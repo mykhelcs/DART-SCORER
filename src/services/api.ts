@@ -53,6 +53,9 @@ export async function apiLoadTournaments(): Promise<TournamentState[]> {
 }
 
 export async function apiSaveMatch(id: string, match: MatchState): Promise<boolean> {
+  // Strict Directive: Never persist 'active' as a stored match ID
+  if (!id || id === 'active') return false;
+
   try {
     const res = await fetch(`${API_BASE}/matches`, {
       method: 'POST',
@@ -81,7 +84,8 @@ export async function apiListMatches(): Promise<SavedMatchRecord[]> {
     const res = await fetch(`${API_BASE}/matches`);
     if (!res.ok) return [];
     const data = await res.json();
-    return data.matches || [];
+    const list = Array.isArray(data.matches) ? data.matches : [];
+    return list.filter((m: SavedMatchRecord) => m && m.id && m.id !== 'active');
   } catch {
     return [];
   }

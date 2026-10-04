@@ -7,6 +7,9 @@ import {
   recordKnockoutMatchResult,
   createChallongeTournament,
   recordChallongeMatchResult,
+  areAllPoolMatchesCompleted,
+  getPlayableTournamentMatches,
+  advanceTournamentProgression,
 } from '../tournament';
 
 describe('Tournament Engine (Pools and Knockout)', () => {
@@ -231,6 +234,143 @@ describe('Tournament Engine (Pools and Knockout)', () => {
       expect(completedFinal.completed).toBe(true);
       expect(completedFinal.winner).toBe('Alice');
       expect(tourney.champion).toBe('Alice');
+    });
+
+    it('supports 1 leg on early rounds and pool stages', () => {
+      // 1. Pools format
+      const poolTourney = createTournament({
+        name: 'Fast 1-Leg Pools',
+        players: ['P1', 'P2', 'P3', 'P4'],
+        poolLegsToWin: 1,
+      });
+      expect(poolTourney.poolLegsToWin).toBe(1);
+      expect(poolTourney.pools[0].fixtures.every((f) => f.legsToWin === 1)).toBe(true);
+
+      // 2. Challonge single elim format
+      const challongeTourney = createChallongeTournament({
+        name: 'Fast 1-Leg Challonge',
+        players: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'],
+        legsToWin: 1, // early rounds
+        semiLegsToWin: 2,
+        finalLegsToWin: 3,
+      });
+
+      const qfMatches = challongeTourney.challongeMatches!.filter((m) => m.roundName === 'Quarter-Final');
+      expect(qfMatches.length).toBe(4);
+      expect(qfMatches.every((m) => m.legsToWin === 1)).toBe(true);
+
+      const semiMatches = challongeTourney.challongeMatches!.filter((m) => m.roundName === 'Semi-Final');
+      expect(semiMatches.every((m) => m.legsToWin === 2)).toBe(true);
+
+      const finalMatch = challongeTourney.challongeMatches!.find((m) => m.roundName === 'Championship Final')!;
+      expect(finalMatch.legsToWin).toBe(3);
+    });
+
+    it('automatically advances progression from 2 round-robin pools to semifinals, final and champion', () => {
+      let tourney = createTournament({
+        name: 'Auto-Advance Darts',
+        players: ['A1', 'A2', 'A3', 'A4', 'B1', 'B2', 'B3', 'B4'],
+        poolLegsToWin: 1,
+        koSemiLegsToWin: 2,
+        koFinalLegsToWin: 3,
+      });
+
+      expect(areAllPoolMatchesCompleted(tourney)).toBe(false);
+
+      // Initially, getPlayableTournamentMatches returns all 12 pool matches (6 in Pool A, 6 in Pool B)
+      const initialMatches = getPlayableTournamentMatches(tourney);
+      expect(initialMatches).toHaveLength(12);
+      expect(initialMatches[0].stage).toBe('pool');
+      expect(initialMatches[0].legsToWin).toBe(1);
+
+      // Play all 6 matches in Pool A:
+      // Make A1 win all matches (3-0), A2 win 2 matches (2-1), A3 win 1, A4 win 0
+      for (const fix of tourney.pools[0].fixtures) {
+        let p1Wins = true;
+        if (fix.player1 === 'A1' || fix.player2 === 'A1') {
+          p1Wins = fix.player1 === 'A1';
+        } else if (fix.player1 === 'A2' || fix.player2 === 'A2') {
+          p1Wins = fix.player1 === 'A2';
+        }
+        tourney = recordPoolMatchResult(tourney, 'pool-a', fix.id, {
+          player1Legs: p1Wins ? 1 : 0,
+          player2Legs: p1Wins ? 0 : 1,
+        });
+      }
+
+      // Pool A finished, but Pool B still pending
+      expect(areAllPoolMatchesCompleted(tourney)).toBe(false);
+
+      // Play all 6 matches in Pool B:
+      // Make B1 win 3 matches, B2 win 2 matches
+      for (const fix of tourney.pools[1].fixtures) {
+        let p1Wins = true;
+        if (fix.player1 === 'B1' || fix.player2 === 'B1') {
+          p1Wins = fix.player1 === 'B1';
+        } else if (fix.player1 === 'B2' || fix.player2 === 'B2') {
+          p1Wins = fix.player1 === 'B2';
+        }
+        tourney = recordPoolMatchResult(tourney, 'pool-b', fix.id, {
+          player1Legs: p1Wins ? 1 : 0,
+          player2Legs: p1Wins ? 0 : 1,
+        });
+      }
+
+      // Now all pool matches are complete!
+      expect(areAllPoolMatchesCompleted(tourney)).toBe(true);
+
+      // Advance progression automatically
+      const adv1 = advanceTournamentProgression(tourney);
+      expect(adv1.stageEvent).toBe('pools_completed');
+      tourney = adv1.updatedTournament;
+
+      // Knockout bracket must be automatically generated with Semifinals:
+      // 1A (A1) vs 2B (B2) and 1B (B1) vs 2A (A2)
+      expect(tourney.knockoutMatches.length).toBeGreaterThanOrEqual(3);
+      const semi1 = tourney.knockoutMatches.find((m) => m.id === 'ko-semi-1')!;
+      const semi2 = tourney.knockoutMatches.find((m) => m.id === 'ko-semi-2')!;
+      expect(semi1.player1).toBe('A1');
+      expect(semi1.player2).toBe('B2');
+      expect(semi2.player1).toBe('B1');
+      expect(semi2.player2).toBe('A2');
+
+      // Now getPlayableTournamentMatches should include the unlocked Semifinals!
+      const activeSemis = getPlayableTournamentMatches(tourney).filter((m) => m.stage === 'knockout');
+      expect(activeSemis).toHaveLength(2);
+      expect(activeSemis[0].legsToWin).toBe(2);
+
+      // Play Semi 1: A1 beats B2 (2-0)
+      tourney = recordKnockoutMatchResult(tourney, 'ko-semi-1', {
+        player1Legs: 2,
+        player2Legs: 0,
+      });
+
+      // Play Semi 2: B1 beats A2 (2-1)
+      tourney = recordKnockoutMatchResult(tourney, 'ko-semi-2', {
+        player1Legs: 2,
+        player2Legs: 1,
+      });
+
+      // Advance progression after Semis
+      const adv2 = advanceTournamentProgression(tourney);
+      tourney = adv2.updatedTournament;
+
+      // Final should now be populated with A1 vs B1!
+      const finalMatch = tourney.knockoutMatches.find((m) => m.id === 'ko-final')!;
+      expect(finalMatch.player1).toBe('A1');
+      expect(finalMatch.player2).toBe('B1');
+      expect(finalMatch.completed).toBe(false);
+
+      // Play Championship Final: A1 beats B1 (3-1)
+      tourney = recordKnockoutMatchResult(tourney, 'ko-final', {
+        player1Legs: 3,
+        player2Legs: 1,
+      });
+
+      // Final progression
+      const adv3 = advanceTournamentProgression(tourney);
+      expect(adv3.stageEvent).toBe('champion_crowned');
+      expect(adv3.updatedTournament.champion).toBe('A1');
     });
   });
 });

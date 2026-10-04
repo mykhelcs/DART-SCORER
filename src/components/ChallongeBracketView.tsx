@@ -2,6 +2,8 @@ import React from 'react';
 import { TournamentState, ChallongeMatch } from '../core/types';
 import { recordChallongeMatchResult } from '../core/tournament';
 
+import { syncTournamentToMatchesCatalog } from '../services/tournamentSync';
+
 interface ChallongeBracketViewProps {
   tournament: TournamentState;
   onUpdateTournament: (updated: TournamentState) => void;
@@ -10,6 +12,7 @@ interface ChallongeBracketViewProps {
     player2: string,
     legsToWin: number,
     onFinish: (p1Legs: number, p2Legs: number) => void,
+    matchId?: string,
   ) => void;
 }
 
@@ -33,12 +36,10 @@ export const ChallongeBracketView: React.FC<ChallongeBracketViewProps> = ({
 
   const handleScoreMatch = (match: ChallongeMatch) => {
     if (!match.player1 || !match.player2 || match.completed) return;
+    const matchId = `${tournament.id}-${match.id}`;
 
     if (onLoadMatchForScoring) {
-      onLoadMatchForScoring(match.player1, match.player2, match.legsToWin, (p1Legs, p2Legs) => {
-        const updated = recordChallongeMatchResult(tournament, match.id, p1Legs, p2Legs);
-        onUpdateTournament(updated);
-      });
+      onLoadMatchForScoring(match.player1, match.player2, match.legsToWin, () => {}, matchId);
       return;
     }
 
@@ -55,6 +56,7 @@ export const ChallongeBracketView: React.FC<ChallongeBracketViewProps> = ({
       parseInt(p2, 10) || 0,
     );
     onUpdateTournament(updated);
+    syncTournamentToMatchesCatalog(updated).catch(() => {});
   };
 
   const handleQuickManualResult = (match: ChallongeMatch, winner: 1 | 2) => {
@@ -62,6 +64,7 @@ export const ChallongeBracketView: React.FC<ChallongeBracketViewProps> = ({
     const p2Legs = winner === 2 ? match.legsToWin : 0;
     const updated = recordChallongeMatchResult(tournament, match.id, p1Legs, p2Legs);
     onUpdateTournament(updated);
+    syncTournamentToMatchesCatalog(updated).catch(() => {});
   };
 
   return (

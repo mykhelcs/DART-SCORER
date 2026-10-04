@@ -14,9 +14,18 @@ import { Toast } from './Toast';
 import { VictoryModal } from './VictoryModal';
 import { GameLogView } from './GameLogView';
 import { PostGameReportModal } from './PostGameReportModal';
-import { saveCurrentMatch, loadCurrentMatch, clearCurrentMatch, saveStoredMatch } from '../services/storage';
+import {
+  saveCurrentMatch,
+  loadCurrentMatch,
+  loadCurrentMatchId,
+  clearCurrentMatch,
+  saveStoredMatch,
+  listStoredMatches,
+} from '../services/storage';
 import { apiSaveMatch, apiSaveAuditLog } from '../services/api';
 import { exportGameLogsToCsv } from '../services/export';
+import { findDuplicateMatch } from '../core/duplicateGuard';
+import { SavedMatchRecord } from '../core/types';
 
 interface MatchViewProps {
   onOpenProjector?: (state: MatchState) => void;
@@ -31,7 +40,9 @@ export const MatchView: React.FC<MatchViewProps> = ({
   matchId: initialMatchId,
   onMatchComplete,
 }) => {
-  const [currentMatchId, setCurrentMatchId] = useState<string>(() => initialMatchId || `match-${Date.now()}`);
+  const [currentMatchId, setCurrentMatchId] = useState<string | null>(
+    () => initialMatchId || loadCurrentMatchId() || null,
+  );
   const [match, setMatch] = useState<MatchState | null>(() => {
     return presetMatch ?? loadCurrentMatch();
   });
@@ -56,6 +67,10 @@ export const MatchView: React.FC<MatchViewProps> = ({
   const [doubleOut, setDoubleOut] = useState(true);
 
   // Modal & Toast states
+  const [duplicateApproval, setDuplicateApproval] = useState<{
+    playerNames: string[];
+    existingMatch: SavedMatchRecord;
+  } | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [toastType, setToastType] = useState<'good' | 'bad' | 'neutral'>('neutral');
   const [victoryModal, setVictoryModal] = useState<{
@@ -70,11 +85,11 @@ export const MatchView: React.FC<MatchViewProps> = ({
   // Auto-save whenever match state changes (localStorage + debounced backend SQLite)
   useEffect(() => {
     if (!match) return;
-    saveCurrentMatch(match);
+    saveCurrentMatch(match, currentMatchId || undefined);
+    if (!currentMatchId || currentMatchId === 'active') return;
     saveStoredMatch(currentMatchId, match);
     const timer = setTimeout(() => {
       apiSaveMatch(currentMatchId, match).catch(() => {});
-      apiSaveMatch('active', match).catch(() => {});
     }, 250);
     return () => clearTimeout(timer);
   }, [match, currentMatchId]);
@@ -91,6 +106,29 @@ export const MatchView: React.FC<MatchViewProps> = ({
   const handleStartMatch = (e: React.FormEvent) => {
     e.preventDefault();
     const playerNames = [p1, p2, p3, p4].map((n) => n.trim()).filter(Boolean);
+    if (playerNames.length < 2) {
+      showToast('Please enter at least 2 player names.', 'bad');
+      return;
+    }
+
+    // STRICT POLICY: Never duplicate a match, unless approved
+    const existingDuplicate = findDuplicateMatch(
+      { playerNames, mode, legsToWin: legs },
+      listStoredMatches(),
+    );
+
+    if (existingDuplicate) {
+      setDuplicateApproval({
+        playerNames,
+        existingMatch: existingDuplicate,
+      });
+      return;
+    }
+
+    executeStartMatch(playerNames, false);
+  };
+
+  const executeStartMatch = (playerNames: string[], wasApprovedDuplicate: boolean) => {
     const newMatch = createInitialMatchState({
       mode,
       doubleOut,
@@ -101,8 +139,29 @@ export const MatchView: React.FC<MatchViewProps> = ({
     setCurrentMatchId(newId);
     setMatch(newMatch);
     setVictoryModal(null);
+    setDuplicateApproval(null);
+    saveCurrentMatch(newMatch, newId);
     saveStoredMatch(newId, newMatch);
     apiSaveMatch(newId, newMatch).catch(() => {});
+    if (wasApprovedDuplicate) {
+      apiSaveAuditLog({
+        action: 'DUPLICATE_MATCH_APPROVED',
+        entityType: 'match',
+        entityId: newId,
+        details: `User approved duplicate match between ${playerNames.join(', ')}`,
+      }).catch(() => {});
+      showToast('Duplicate match approved and started.', 'good');
+    }
+  };
+
+  const handleApproveDuplicate = () => {
+    if (!duplicateApproval) return;
+    executeStartMatch(duplicateApproval.playerNames, true);
+  };
+
+  const handleRejectDuplicate = () => {
+    setDuplicateApproval(null);
+    showToast('Match start cancelled: duplicate not approved.', 'neutral');
   };
 
   const handleThrowDarts = (darts: Dart[]) => {
@@ -146,7 +205,7 @@ export const MatchView: React.FC<MatchViewProps> = ({
       apiSaveAuditLog({
         action: 'MATCH_WON',
         entityType: 'match',
-        entityId: 'active',
+        entityId: currentMatchId || 'unknown',
         details: `Match completed. Winner: ${lastResult.state.winner}`,
       }).catch(() => {});
       if (onMatchComplete) {
@@ -170,7 +229,7 @@ export const MatchView: React.FC<MatchViewProps> = ({
     apiSaveAuditLog({
       action: 'MATCH_UNDO',
       entityType: 'scorer',
-      entityId: 'active',
+      entityId: currentMatchId || 'unknown',
       details: 'Scorer undid last throw',
     }).catch(() => {});
   };
@@ -185,6 +244,7 @@ export const MatchView: React.FC<MatchViewProps> = ({
   const handleNewMatch = () => {
     if (window.confirm('Abandon this match and start a new match?')) {
       clearCurrentMatch();
+      setCurrentMatchId(null);
       setMatch(null);
       setVictoryModal(null);
     }
@@ -416,6 +476,100 @@ export const MatchView: React.FC<MatchViewProps> = ({
           onClose={() => setShowReportModal(false)}
           onNewMatch={handleNewMatch}
         />
+      )}
+
+      {/* Duplicate Approval Modal */}
+      {duplicateApproval && (
+        <div
+          className="modal-overlay"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.75)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 120,
+            padding: '16px',
+          }}
+        >
+          <div
+            className="card-panel"
+            style={{
+              maxWidth: '520px',
+              width: '100%',
+              border: '2px solid var(--brass)',
+              boxShadow: '0 10px 40px rgba(0,0,0,0.6)',
+              background: 'var(--baize2)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+              <span style={{ fontSize: '1.8rem' }}>⚠️</span>
+              <div>
+                <h3 style={{ margin: 0, color: 'var(--brass)', fontSize: '1.4rem' }}>
+                  Duplicate Match Detected
+                </h3>
+                <div style={{ fontSize: '0.82rem', color: 'var(--muted)' }}>
+                  Policy: Never duplicate a match unless explicitly approved
+                </div>
+              </div>
+            </div>
+
+            <div
+              style={{
+                background: 'var(--baize)',
+                border: '1px solid var(--line)',
+                borderRadius: '8px',
+                padding: '12px 14px',
+                marginBottom: '16px',
+                fontSize: '0.9rem',
+                lineHeight: 1.5,
+              }}
+            >
+              <div style={{ marginBottom: '4px', color: 'var(--muted)' }}>
+                An existing match with this exact player roster already exists:
+              </div>
+              <div style={{ fontWeight: 700, color: 'var(--cream)', fontSize: '1rem' }}>
+                👥 {duplicateApproval.existingMatch.match.players.map((p) => p.name).join(' vs ')}
+              </div>
+              <div style={{ color: 'var(--muted)', fontSize: '0.85rem', marginTop: '6px' }}>
+                Match ID: <code style={{ color: 'var(--brass)' }}>{duplicateApproval.existingMatch.id}</code>
+                {' • '}
+                Status: <strong>{duplicateApproval.existingMatch.match.over ? 'Completed' : 'In Progress'}</strong>
+                {' • '}
+                Format: {duplicateApproval.existingMatch.match.mode} (First to {duplicateApproval.existingMatch.match.legsToWin})
+              </div>
+            </div>
+
+            <p style={{ fontSize: '0.92rem', color: 'var(--cream)', marginBottom: '20px', lineHeight: 1.5 }}>
+              A match between these players already exists in the system. Do you approve creating this duplicate match?
+            </p>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button
+                type="button"
+                className="btn sec"
+                onClick={handleRejectDuplicate}
+                style={{ padding: '8px 16px' }}
+              >
+                Cancel / Do Not Duplicate
+              </button>
+              <button
+                type="button"
+                className="btn pri"
+                onClick={handleApproveDuplicate}
+                style={{
+                  padding: '8px 16px',
+                  background: 'var(--brass)',
+                  color: '#000',
+                  fontWeight: 700,
+                }}
+              >
+                ✓ Approve Duplicate Match
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

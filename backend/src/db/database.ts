@@ -71,6 +71,8 @@ export function initDb(dbPathOrMemory?: string): Database.Database {
       details TEXT,
       timestamp TEXT NOT NULL
     );
+
+    DELETE FROM matches WHERE id = 'active';
   `);
 
   return db;
@@ -121,6 +123,9 @@ export function saveMatchDb(
   match: MatchState,
   tournamentId?: string,
 ): void {
+  // Never persist 'active' as a stored match ID
+  if (!id || id === 'active') return;
+
   const stmt = db.prepare(`
     INSERT INTO matches (id, tournament_id, data_json, created_at, updated_at)
     VALUES (@id, @tournament_id, @data_json, @created_at, @updated_at)
@@ -141,6 +146,8 @@ export function saveMatchDb(
 }
 
 export function getMatchDb(db: Database.Database, id: string): MatchState | null {
+  if (!id || id === 'active') return null;
+
   const row = db
     .prepare('SELECT data_json FROM matches WHERE id = ?')
     .get(id) as { data_json: string } | undefined;
@@ -157,7 +164,7 @@ export function listMatchesDb(db: Database.Database): {
   updatedAt?: string;
 }[] {
   const rows = db
-    .prepare('SELECT id, tournament_id, data_json, created_at, updated_at FROM matches ORDER BY updated_at DESC')
+    .prepare("SELECT id, tournament_id, data_json, created_at, updated_at FROM matches WHERE id != 'active' ORDER BY updated_at DESC")
     .all() as {
       id: string;
       tournament_id: string | null;

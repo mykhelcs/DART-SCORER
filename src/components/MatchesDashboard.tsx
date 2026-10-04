@@ -1,11 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { MatchState, SavedMatchRecord, GameMode } from '../core/types';
 import { createInitialMatchState } from '../core/scoring';
+import { findDuplicateMatch } from '../core/duplicateGuard';
 import {
   listStoredMatches,
   saveStoredMatch,
   deleteStoredMatch,
   saveCurrentMatch,
+  loadCurrentMatchId,
+  clearCurrentMatch,
 } from '../services/storage';
 import {
   apiListMatches,
@@ -22,6 +25,16 @@ interface MatchesDashboardProps {
   onOpenProjector?: (match: MatchState) => void;
 }
 
+interface DuplicateApprovalState {
+  candidatePlayers: string[];
+  mode: GameMode;
+  doubleOut: boolean;
+  legsToWin: number;
+  startImmediately: boolean;
+  existingMatch: SavedMatchRecord;
+  isCloneAction?: boolean;
+}
+
 export const MatchesDashboard: React.FC<MatchesDashboardProps> = ({
   onLoadMatchForScoring,
   onOpenProjector,
@@ -36,6 +49,7 @@ export const MatchesDashboard: React.FC<MatchesDashboardProps> = ({
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<SavedMatchRecord | null>(null);
   const [viewReportMatch, setViewReportMatch] = useState<MatchState | null>(null);
+  const [duplicateApproval, setDuplicateApproval] = useState<DuplicateApprovalState | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [toastType, setToastType] = useState<'good' | 'bad' | 'neutral'>('neutral');
 
@@ -112,10 +126,40 @@ export const MatchesDashboard: React.FC<MatchesDashboardProps> = ({
       return;
     }
 
+    // STRICT POLICY: Never duplicate a match, unless approved
+    const existingDuplicate = findDuplicateMatch(
+      { playerNames, mode: gameMode, legsToWin },
+      matches,
+    );
+
+    if (existingDuplicate) {
+      setDuplicateApproval({
+        candidatePlayers: playerNames,
+        mode: gameMode,
+        doubleOut,
+        legsToWin,
+        startImmediately,
+        existingMatch: existingDuplicate,
+        isCloneAction: false,
+      });
+      return;
+    }
+
+    await executeCreateMatch(playerNames, gameMode, doubleOut, legsToWin, startImmediately, false);
+  };
+
+  const executeCreateMatch = async (
+    playerNames: string[],
+    mode: GameMode,
+    isDoubleOut: boolean,
+    legs: number,
+    startImmediately: boolean,
+    wasApprovedDuplicate: boolean,
+  ) => {
     const newMatch = createInitialMatchState({
-      mode: gameMode,
-      doubleOut,
-      legsToWin,
+      mode,
+      doubleOut: isDoubleOut,
+      legsToWin: legs,
       playerNames,
     });
 
@@ -125,22 +169,54 @@ export const MatchesDashboard: React.FC<MatchesDashboardProps> = ({
     if (isBackendOnline) {
       await apiSaveMatch(matchId, newMatch);
       await apiSaveAuditLog({
-        action: 'CREATE_MATCH',
+        action: wasApprovedDuplicate ? 'DUPLICATE_MATCH_APPROVED' : 'CREATE_MATCH',
         entityType: 'match',
         entityId: matchId,
-        details: `Match created between ${playerNames.join(', ')} (${gameMode}, legs to win: ${legsToWin})`,
+        details: wasApprovedDuplicate
+          ? `User approved duplicate match between ${playerNames.join(', ')} (${mode}, legs: ${legs})`
+          : `Match created between ${playerNames.join(', ')} (${mode}, legs: ${legs})`,
       });
     }
 
     setShowCreateModal(false);
-    showToast(`Match created: ${playerNames.join(' vs ')}`, 'good');
+    setDuplicateApproval(null);
+    showToast(
+      wasApprovedDuplicate
+        ? `Duplicate match approved & created: ${playerNames.join(' vs ')}`
+        : `Match created: ${playerNames.join(' vs ')}`,
+      'good',
+    );
 
     if (startImmediately) {
-      saveCurrentMatch(newMatch);
+      saveCurrentMatch(newMatch, matchId);
       onLoadMatchForScoring(newMatch, matchId);
     } else {
       await loadAllMatches();
     }
+  };
+
+  const handleRequestDuplicateMatch = (targetRecord: SavedMatchRecord) => {
+    const targetMatch = targetRecord.match;
+    setDuplicateApproval({
+      candidatePlayers: targetMatch.players.map((p) => p.name),
+      mode: targetMatch.mode,
+      doubleOut: targetMatch.doubleOut,
+      legsToWin: targetMatch.legsToWin,
+      startImmediately: false,
+      existingMatch: targetRecord,
+      isCloneAction: true,
+    });
+  };
+
+  const handleApproveDuplicate = async () => {
+    if (!duplicateApproval) return;
+    const { candidatePlayers, mode, doubleOut: isDoubleOut, legsToWin: legs, startImmediately } = duplicateApproval;
+    await executeCreateMatch(candidatePlayers, mode, isDoubleOut, legs, startImmediately, true);
+  };
+
+  const handleRejectDuplicate = () => {
+    setDuplicateApproval(null);
+    showToast('Match duplication cancelled: not approved.', 'neutral');
   };
 
   // Handle Match Deletion
@@ -149,6 +225,9 @@ export const MatchesDashboard: React.FC<MatchesDashboardProps> = ({
 
     const id = deleteConfirmTarget.id;
     deleteStoredMatch(id);
+    if (loadCurrentMatchId() === id) {
+      clearCurrentMatch();
+    }
 
     if (isBackendOnline) {
       await apiDeleteMatch(id);
@@ -492,7 +571,7 @@ export const MatchesDashboard: React.FC<MatchesDashboardProps> = ({
                     className="btn pri"
                     style={{ flex: 1, padding: '8px 12px', fontSize: '0.95rem' }}
                     onClick={() => {
-                      saveCurrentMatch(match);
+                      saveCurrentMatch(match, item.id);
                       onLoadMatchForScoring(match, item.id);
                     }}
                   >
@@ -518,6 +597,15 @@ export const MatchesDashboard: React.FC<MatchesDashboardProps> = ({
                       📺
                     </button>
                   )}
+
+                  <button
+                    className="btn sec"
+                    style={{ padding: '8px 12px' }}
+                    onClick={() => handleRequestDuplicateMatch(item)}
+                    title="Duplicate match (requires approval)"
+                  >
+                    📋 Duplicate
+                  </button>
 
                   <button
                     className="btn danger"
@@ -807,6 +895,102 @@ export const MatchesDashboard: React.FC<MatchesDashboardProps> = ({
           match={viewReportMatch}
           onClose={() => setViewReportMatch(null)}
         />
+      )}
+
+      {/* Duplicate Approval Modal */}
+      {duplicateApproval && (
+        <div
+          className="modal-overlay"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.75)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 120,
+            padding: '16px',
+          }}
+        >
+          <div
+            className="card-panel"
+            style={{
+              maxWidth: '520px',
+              width: '100%',
+              border: '2px solid var(--brass)',
+              boxShadow: '0 10px 40px rgba(0,0,0,0.6)',
+              background: 'var(--baize2)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+              <span style={{ fontSize: '1.8rem' }}>⚠️</span>
+              <div>
+                <h3 style={{ margin: 0, color: 'var(--brass)', fontSize: '1.4rem' }}>
+                  {duplicateApproval.isCloneAction ? 'Approve Duplicate Match' : 'Duplicate Match Detected'}
+                </h3>
+                <div style={{ fontSize: '0.82rem', color: 'var(--muted)' }}>
+                  Policy: Never duplicate a match unless explicitly approved
+                </div>
+              </div>
+            </div>
+
+            <div
+              style={{
+                background: 'var(--baize)',
+                border: '1px solid var(--line)',
+                borderRadius: '8px',
+                padding: '12px 14px',
+                marginBottom: '16px',
+                fontSize: '0.9rem',
+                lineHeight: 1.5,
+              }}
+            >
+              <div style={{ marginBottom: '4px', color: 'var(--muted)' }}>
+                An existing match with this exact player roster already exists:
+              </div>
+              <div style={{ fontWeight: 700, color: 'var(--cream)', fontSize: '1rem' }}>
+                👥 {duplicateApproval.existingMatch.match.players.map((p) => p.name).join(' vs ')}
+              </div>
+              <div style={{ color: 'var(--muted)', fontSize: '0.85rem', marginTop: '6px' }}>
+                Match ID: <code style={{ color: 'var(--brass)' }}>{duplicateApproval.existingMatch.id}</code>
+                {' • '}
+                Status: <strong>{duplicateApproval.existingMatch.match.over ? 'Completed' : 'In Progress'}</strong>
+                {' • '}
+                Format: {duplicateApproval.existingMatch.match.mode} (First to {duplicateApproval.existingMatch.match.legsToWin})
+              </div>
+            </div>
+
+            <p style={{ fontSize: '0.92rem', color: 'var(--cream)', marginBottom: '20px', lineHeight: 1.5 }}>
+              {duplicateApproval.isCloneAction
+                ? 'Are you sure you want to approve creating a new duplicate of this match?'
+                : 'A match between these players is already recorded in the system. Do you approve creating this duplicate match?'}
+            </p>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button
+                type="button"
+                className="btn sec"
+                onClick={handleRejectDuplicate}
+                style={{ padding: '8px 16px' }}
+              >
+                Cancel / Do Not Duplicate
+              </button>
+              <button
+                type="button"
+                className="btn pri"
+                onClick={handleApproveDuplicate}
+                style={{
+                  padding: '8px 16px',
+                  background: 'var(--brass)',
+                  color: '#000',
+                  fontWeight: 700,
+                }}
+              >
+                ✓ Approve Duplicate Match
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

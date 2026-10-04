@@ -11,6 +11,7 @@ import {
 import {
   saveCurrentMatch,
   loadCurrentMatch,
+  loadCurrentMatchId,
   clearCurrentMatch,
   saveStoredMatch,
   listStoredMatches,
@@ -43,16 +44,27 @@ describe('Storage and Export Services', () => {
     };
   });
 
-  it('saves, loads and clears active match state from localStorage', () => {
+  it('saves, loads and clears active match state and ID from localStorage', () => {
     const match = createInitialMatchState({ playerNames: ['P1', 'P2'] });
-    saveCurrentMatch(match);
+    saveCurrentMatch(match, 'match-custom-123');
     let loaded = loadCurrentMatch();
+    let loadedId = loadCurrentMatchId();
     expect(loaded).toBeDefined();
     expect(loaded?.players[0].name).toBe('P1');
+    expect(loadedId).toBe('match-custom-123');
 
     clearCurrentMatch();
     loaded = loadCurrentMatch();
+    loadedId = loadCurrentMatchId();
     expect(loaded).toBeNull();
+    expect(loadedId).toBeNull();
+  });
+
+  it('never stores or lists "active" as a saved match ID', () => {
+    const match = createInitialMatchState({ playerNames: ['P1', 'P2'] });
+    saveStoredMatch('active', match);
+    const list = listStoredMatches();
+    expect(list.some((m) => m.id === 'active')).toBe(false);
   });
 
   it('saves, loads and clears tournament state from localStorage', () => {

@@ -1,12 +1,16 @@
 import { MatchState, TournamentState, SavedMatchRecord } from '../core/types';
 
 const MATCH_KEY = 'darts_scorer_active_match';
+const MATCH_ID_KEY = 'darts_scorer_active_match_id';
 const MATCHES_CATALOG_KEY = 'darts_scorer_matches_catalog';
 const TOURNAMENT_KEY = 'darts_scorer_active_tournament';
 
-export function saveCurrentMatch(match: MatchState): void {
+export function saveCurrentMatch(match: MatchState, matchId?: string): void {
   try {
     localStorage.setItem(MATCH_KEY, JSON.stringify(match));
+    if (matchId) {
+      localStorage.setItem(MATCH_ID_KEY, matchId);
+    }
   } catch (e) {
     console.error('Failed to save match to localStorage', e);
   }
@@ -49,15 +53,27 @@ export function loadCurrentMatch(): MatchState | null {
   }
 }
 
+export function loadCurrentMatchId(): string | null {
+  try {
+    return localStorage.getItem(MATCH_ID_KEY);
+  } catch {
+    return null;
+  }
+}
+
 export function clearCurrentMatch(): void {
   try {
     localStorage.removeItem(MATCH_KEY);
+    localStorage.removeItem(MATCH_ID_KEY);
   } catch (e) {
     console.error('Failed to clear match', e);
   }
 }
 
 export function saveStoredMatch(id: string, match: MatchState, tournamentId?: string): void {
+  // Strict rule: never store 'active' as a stored match ID
+  if (!id || id === 'active') return;
+
   try {
     const list = listStoredMatches();
     const now = new Date().toISOString();
@@ -86,7 +102,9 @@ export function listStoredMatches(): SavedMatchRecord[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed as SavedMatchRecord[];
+    return (parsed as SavedMatchRecord[]).filter(
+      (item) => item && item.id && item.id !== 'active' && item.match,
+    );
   } catch (e) {
     console.error('Failed to load stored matches', e);
     return [];

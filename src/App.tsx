@@ -8,6 +8,9 @@ import { RulesGuide } from './components/RulesGuide';
 import { ExportView } from './components/ExportView';
 import { ProjectorView } from './components/ProjectorView';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { loadTournament, getStoredMatch, saveStoredMatch, saveCurrentMatch } from './services/storage';
+import { handleTournamentMatchCompleted } from './services/tournamentSync';
+import { apiSaveMatch } from './services/api';
 
 type Tab = 'match' | 'matches' | 'tournament' | 'rules' | 'export';
 
@@ -16,9 +19,6 @@ export const App: React.FC = () => {
   const [projectorState, setProjectorState] = useState<MatchState | null>(null);
   const [presetMatch, setPresetMatch] = useState<MatchState | null>(null);
   const [currentMatchId, setCurrentMatchId] = useState<string | undefined>(undefined);
-  const [onTournamentMatchFinish, setOnTournamentMatchFinish] = useState<
-    ((p1Legs: number, p2Legs: number) => void) | null
-  >(null);
 
   // If projector mode is active, render fullscreen spectator board
   if (projectorState) {
@@ -34,34 +34,43 @@ export const App: React.FC = () => {
     player1: string,
     player2: string,
     legsToWin: number,
-    onFinish: (p1Legs: number, p2Legs: number) => void,
+    _onFinish?: (p1Legs: number, p2Legs: number) => void,
+    matchId?: string,
   ) => {
-    const newMatch = createInitialMatchState({
-      mode: 501,
-      doubleOut: true,
-      legsToWin,
-      playerNames: [player1, player2],
-    });
-    const matchId = `tourney-match-${Date.now()}`;
-    setCurrentMatchId(matchId);
+    const id = matchId || `tourney-match-${Date.now()}`;
+    const existing = getStoredMatch(id);
+    const newMatch =
+      existing ??
+      createInitialMatchState({
+        mode: 501,
+        doubleOut: true,
+        legsToWin,
+        playerNames: [player1, player2],
+      });
+    setCurrentMatchId(id);
     setPresetMatch(newMatch);
-    setOnTournamentMatchFinish(() => onFinish);
+    saveCurrentMatch(newMatch, id);
     setActiveTab('match');
   };
 
   const handleLoadDashboardMatch = (match: MatchState, matchId: string) => {
     setPresetMatch(match);
     setCurrentMatchId(matchId);
-    setOnTournamentMatchFinish(null);
+    saveCurrentMatch(match, matchId);
     setActiveTab('match');
   };
 
-  const handleMatchComplete = (finalState: MatchState) => {
-    if (onTournamentMatchFinish && finalState.players.length >= 2) {
-      const p1Legs = finalState.players[0].legs;
-      const p2Legs = finalState.players[1].legs;
-      onTournamentMatchFinish(p1Legs, p2Legs);
-      setOnTournamentMatchFinish(null);
+  const handleMatchComplete = async (finalState: MatchState) => {
+    if (currentMatchId) {
+      const activeTourney = loadTournament();
+      // STRICT DIRECTIVE: Never auto-generate matches unless it is an active tournament
+      if (activeTourney && currentMatchId.startsWith(`${activeTourney.id}-`)) {
+        await handleTournamentMatchCompleted(activeTourney, currentMatchId, finalState);
+      } else {
+        // Standalone match: purely save match, NEVER auto-generate next matches
+        saveStoredMatch(currentMatchId, finalState);
+        await apiSaveMatch(currentMatchId, finalState).catch(() => {});
+      }
     }
   };
 
