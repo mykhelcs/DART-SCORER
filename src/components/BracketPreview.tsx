@@ -19,9 +19,22 @@ export const BracketPreview: React.FC<BracketPreviewProps> = ({ format, players 
   }
 
   if (format === 'pools_knockout') {
-    const poolSize = 4;
-    const numPools = Math.max(1, Math.ceil(count / poolSize));
+    let numPools = 1;
+    if (count >= 6) {
+      numPools = Math.max(1, Math.round(count / 4));
+    }
     const poolLetters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const baseCount = Math.floor(count / numPools);
+    const remainder = count % numPools;
+
+    let playerCursor = 0;
+    const poolGroups = Array.from({ length: numPools }).map((_, pIdx) => {
+      const letter = poolLetters[pIdx % poolLetters.length];
+      const groupSize = baseCount + (pIdx < remainder ? 1 : 0);
+      const pGroup = cleanPlayers.slice(playerCursor, playerCursor + groupSize);
+      playerCursor += groupSize;
+      return { letter, pGroup };
+    });
 
     return (
       <div style={{ background: '#0d1117', border: '1px solid #30363d', borderRadius: '8px', padding: '16px', marginTop: '12px' }}>
@@ -30,15 +43,12 @@ export const BracketPreview: React.FC<BracketPreviewProps> = ({ format, players 
             Preview: Group Stage + Knockout ({count} Players)
           </span>
           <span style={{ fontSize: '12px', color: '#8b949e' }}>
-            {numPools} {numPools === 1 ? 'Pool' : 'Pools'} &rarr; Top 2 Advance
+            {numPools} {numPools === 1 ? 'Pool' : 'Pools'} &rarr; {numPools === 1 ? 'Top 4 Advance' : 'Top 2 Advance'}
           </span>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fit, minmax(180px, 1fr))`, gap: '12px', marginBottom: '14px' }}>
-          {Array.from({ length: numPools }).map((_, pIdx) => {
-            const letter = poolLetters[pIdx % poolLetters.length];
-            const pGroup = cleanPlayers.slice(pIdx * poolSize, (pIdx + 1) * poolSize);
-
+          {poolGroups.map(({ letter, pGroup }) => {
             return (
               <div
                 key={letter}

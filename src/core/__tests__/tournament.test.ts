@@ -372,6 +372,82 @@ describe('Tournament Engine (Pools and Knockout)', () => {
       expect(adv3.stageEvent).toBe('champion_crowned');
       expect(adv3.updatedTournament.champion).toBe('A1');
     });
+
+    it('creates a single pool of 5 players with exactly 10 fixtures (N*(N-1)/2)', () => {
+      const fivePlayers = ['Alice', 'Bob', 'Charlie', 'Diana', 'Evan'];
+      const tournament = createTournament({
+        name: '5-Player Round Robin',
+        players: fivePlayers,
+        poolLegsToWin: 2,
+      });
+
+      expect(tournament.pools).toHaveLength(1);
+      const poolA = tournament.pools[0];
+      expect(poolA.name).toBe('Pool A');
+      expect(poolA.players).toHaveLength(5);
+      // Combinations of 5 players = 5 * 4 / 2 = 10 fixtures
+      expect(poolA.fixtures).toHaveLength(10);
+      expect(poolA.standings).toHaveLength(5);
+
+      // Verify all pairs exist
+      const pairs = poolA.fixtures.map((f) => `${f.player1} vs ${f.player2}`);
+      expect(pairs).toContain('Alice vs Bob');
+      expect(pairs).toContain('Charlie vs Diana');
+      expect(pairs).toContain('Diana vs Evan');
+    });
+
+    it('generates valid knockout semifinals for 5 players from a single pool without null opponents', () => {
+      const fivePlayers = ['Alice', 'Bob', 'Charlie', 'Diana', 'Evan'];
+      const tournament = createTournament({
+        name: '5-Player Knockout Progression',
+        players: fivePlayers,
+        poolLegsToWin: 2,
+      });
+
+      // Simulate completed standings with ranks 1-5
+      const pool = tournament.pools[0];
+      pool.standings[0].wins = 4; // Alice (1st)
+      pool.standings[1].wins = 3; // Bob (2nd)
+      pool.standings[2].wins = 2; // Charlie (3rd)
+      pool.standings[3].wins = 1; // Diana (4th)
+      pool.standings[4].wins = 0; // Evan (5th)
+
+      const updated = generateKnockoutFromPools(tournament);
+      const semis = updated.knockoutMatches.filter((m) => m.round === 'Semi-Final');
+      expect(semis).toHaveLength(2);
+
+      // Semi 1: 1st vs 4th (Alice vs Diana)
+      expect(semis[0].player1).toBe('Alice');
+      expect(semis[0].player2).toBe('Diana');
+
+      // Semi 2: 2nd vs 3rd (Bob vs Charlie)
+      expect(semis[1].player1).toBe('Bob');
+      expect(semis[1].player2).toBe('Charlie');
+
+      // Playable matches should include both semifinals with no nulls
+      const playable = getPlayableTournamentMatches(updated).filter((m) => m.stage === 'knockout');
+      expect(playable).toHaveLength(2);
+      expect(playable[0].player1).toBe('Alice');
+      expect(playable[0].player2).toBe('Diana');
+      expect(playable[1].player1).toBe('Bob');
+      expect(playable[1].player2).toBe('Charlie');
+    });
+
+    it('balances player counts across pools (e.g. 6 players = 3 and 3, not 4 and 2)', () => {
+      const sixPlayers = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6'];
+      const tournament = createTournament({
+        name: '6-Player Balanced',
+        players: sixPlayers,
+        poolLegsToWin: 2,
+      });
+
+      expect(tournament.pools).toHaveLength(2);
+      expect(tournament.pools[0].players).toHaveLength(3);
+      expect(tournament.pools[1].players).toHaveLength(3);
+      expect(tournament.pools[0].fixtures).toHaveLength(3); // 3*2/2 = 3
+      expect(tournament.pools[1].fixtures).toHaveLength(3); // 3*2/2 = 3
+    });
   });
 });
+
 

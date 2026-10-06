@@ -37,14 +37,25 @@ export function createTournament(options: {
   const koSemiLegsToWin = options.koSemiLegsToWin ?? 3;
   const koFinalLegsToWin = options.koFinalLegsToWin ?? 5;
 
-  const poolSize = 4;
-  const numPools = Math.max(1, Math.ceil(cleanPlayers.length / poolSize));
+  // Determine number of pools:
+  // If 5 or fewer players, keep them in 1 pool (e.g. 5 players -> 10 fixtures, 4 players -> 6 fixtures)
+  // If 6 or more players, split into balanced pools (~4 players per pool, minimum 3 per pool)
+  let numPools = 1;
+  if (cleanPlayers.length >= 6) {
+    numPools = Math.max(1, Math.round(cleanPlayers.length / 4));
+  }
   const poolLetters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+  const baseCount = Math.floor(cleanPlayers.length / numPools);
+  const remainder = cleanPlayers.length % numPools;
+  let playerCursor = 0;
 
   const pools: PoolGroup[] = [];
   for (let i = 0; i < numPools; i++) {
     const poolLetter = poolLetters[i % poolLetters.length];
-    const poolPlayers = cleanPlayers.slice(i * poolSize, (i + 1) * poolSize);
+    const groupSize = baseCount + (i < remainder ? 1 : 0);
+    const poolPlayers = cleanPlayers.slice(playerCursor, playerCursor + groupSize);
+    playerCursor += groupSize;
     const poolId = `pool-${poolLetter.toLowerCase()}`;
 
     // Round-robin pairings
@@ -179,6 +190,71 @@ export function recordPoolMatchResult(
 
 export function generateKnockoutFromPools(tournament: TournamentState): TournamentState {
   const updated = JSON.parse(JSON.stringify(tournament)) as TournamentState;
+  const matches: KnockoutMatch[] = [];
+
+  // Single-pool knockout generation (e.g., 5-player round robin)
+  if (updated.pools.length === 1) {
+    const sorted = calculateStandings(updated.pools[0]);
+    if (sorted.length >= 4) {
+      // Top 4 advance: 1st vs 4th, 2nd vs 3rd
+      matches.push({
+        id: 'ko-semi-1',
+        round: 'Semi-Final',
+        matchNumber: 1,
+        player1: sorted[0]?.name ?? null,
+        player2: sorted[3]?.name ?? null,
+        legsToWin: updated.koSemiLegsToWin,
+        winner: null,
+        player1Legs: 0,
+        player2Legs: 0,
+        completed: false,
+      });
+
+      matches.push({
+        id: 'ko-semi-2',
+        round: 'Semi-Final',
+        matchNumber: 2,
+        player1: sorted[1]?.name ?? null,
+        player2: sorted[2]?.name ?? null,
+        legsToWin: updated.koSemiLegsToWin,
+        winner: null,
+        player1Legs: 0,
+        player2Legs: 0,
+        completed: false,
+      });
+
+      matches.push({
+        id: 'ko-final',
+        round: 'Final',
+        matchNumber: 1,
+        player1: null,
+        player2: null,
+        legsToWin: updated.koFinalLegsToWin,
+        winner: null,
+        player1Legs: 0,
+        player2Legs: 0,
+        completed: false,
+      });
+    } else {
+      // Top 2 advance directly to Championship Final
+      matches.push({
+        id: 'ko-final',
+        round: 'Final',
+        matchNumber: 1,
+        player1: sorted[0]?.name ?? null,
+        player2: sorted[1]?.name ?? null,
+        legsToWin: updated.koFinalLegsToWin,
+        winner: null,
+        player1Legs: 0,
+        player2Legs: 0,
+        completed: false,
+      });
+    }
+
+    updated.knockoutMatches = matches;
+    return updated;
+  }
+
   const advancingPlayers: { poolName: string; rank: number; name: string }[] = [];
 
   for (const pool of updated.pools) {
@@ -186,8 +262,6 @@ export function generateKnockoutFromPools(tournament: TournamentState): Tourname
     if (sorted[0]) advancingPlayers.push({ poolName: pool.name, rank: 1, name: sorted[0].name });
     if (sorted[1]) advancingPlayers.push({ poolName: pool.name, rank: 2, name: sorted[1].name });
   }
-
-  const matches: KnockoutMatch[] = [];
 
   if (advancingPlayers.length <= 4) {
     // 2 Semi-Finals + 1 Final
